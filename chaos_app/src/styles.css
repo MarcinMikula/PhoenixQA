@@ -1,0 +1,79 @@
+/* styles.css
+ * Deliberately plain. This app exists to be tested, not admired.
+ * Just enough structure to make manual inspection in the browser sane.
+ */
+
+body {
+  font-family: system-ui, sans-serif;
+  background: #f4f4f4;
+  margin: 0;
+  padding: 2rem;
+}
+
+.chaos-app {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+header h1 {
+  margin-bottom: 0.25rem;
+}
+
+.chaos-subtitle {
+  color: #666;
+  margin-top: 0;
+}
+
+.chaos-status {
+  background: #1f1f1f;
+  color: #d8f999;
+  font-family: monospace;
+  font-size: 0.85rem;
+  padding: 1rem;
+  border-radius: 6px;
+  margin: 1.5rem 0;
+}
+
+.chaos-status ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+main > section,
+.chaos-form {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+input {
+  width: 100%;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+
+button {
+  margin-top: 1rem;
+  padding: 0.5rem 1.25rem;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid #eee;
+}

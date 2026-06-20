@@ -16,7 +16,8 @@ class Settings:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1")
     healing_mode: str = os.getenv("HEALING_MODE", "safe")
     chaos_app_url: str = os.getenv("CHAOS_APP_URL", "http://localhost:5173")
-    chaos_level: str = os.getenv("CHAOS_LEVEL", "MEDIUM")
+    chaos_level: str = os.getenv("CHAOS_LEVEL", "MEDIUM")  # LOW | MEDIUM | HIGH
+    shadow_dom_enabled: bool = os.getenv("SHADOW_DOM_ENABLED", "false").lower() == "true"
     db_path: str = os.getenv("DB_PATH", "phoenix/training/healing_history.db")
     default_timeout: int = int(os.getenv("DEFAULT_TIMEOUT", "10000"))
     healing_timeout: int = int(os.getenv("HEALING_TIMEOUT", "30000"))

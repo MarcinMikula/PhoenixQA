@@ -180,6 +180,24 @@ needed.
 
 ---
 
+### Verified: selector_rotation works as designed (manual browser check)
+
+First real confirmation that code matches design, not just "compiles."
+
+In browser DevTools, inspected `[id="chaos-username"]` across two page
+reloads:
+- Reload 1: `data-testid="username-h1fz"`
+- Reload 2: `data-testid="username-rwp4"`
+
+Confirms: suffix is stable within a single mount (doesn't change per
+keystroke, thanks to `useMemo`), but rotates on every fresh mount. This is
+exactly the failure mode the whole project exists to fix — a hardcoded
+`[data-testid="username"]` locator (as used in `ChaosLoginPage.py`) will
+never match anything on this app, because that exact attribute value never
+exists standalone, only with a rotating suffix attached.
+
+---
+
 ## TODO (future sprints)
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
