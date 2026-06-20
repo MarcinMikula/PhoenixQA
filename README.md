@@ -44,7 +44,23 @@ LLM Analyzer             ← Ollama (local) or Anthropic API
               ▼
         Self-Training     ← Few-shot context for better future repairs
 ```
+```mermaid
+flowchart TD
+    Config[Chaos Engine config<br/>LOW / MEDIUM / HIGH / CHAOS]
+    Config --> App
 
+    subgraph App[React Chaos App]
+        Login[Login form<br/>selector rotation]
+        Tickets[Ticket list<br/>shadow DOM toggle]
+        AddItem[Add item form<br/>async delay]
+    end
+
+    App --> Test[PhoenixQA test run<br/>Playwright + pytest]
+
+    Test --> Pass{Selector works?}
+    Pass -->|Yes| Green[Test green]
+    Pass -->|No| Healer[Healer kicks in<br/>Sprint 4/5]
+```
 ---
 
 ## 🗂️ Project Structure
@@ -65,23 +81,7 @@ PhoenixQA/
 │   └── integration/
 └── config/
 ```
-```mermaid
-flowchart TD
-    Config[Chaos Engine config<br/>LOW / MEDIUM / HIGH / CHAOS]
-    Config --> App
 
-    subgraph App[React Chaos App]
-        Login[Login form<br/>selector rotation]
-        Tickets[Ticket list<br/>shadow DOM toggle]
-        AddItem[Add item form<br/>async delay]
-    end
-
-    App --> Test[PhoenixQA test run<br/>Playwright + pytest]
-
-    Test --> Pass{Selector works?}
-    Pass -->|Yes| Green[Test green]
-    Pass -->|No| Healer[Healer kicks in<br/>Sprint 4/5]
-```
 ---
 
 ## 🔒 Privacy-first AI design
