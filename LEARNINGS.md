@@ -83,18 +83,110 @@ Sprint 7 scope grows accordingly: needs a benchmark runner that executes the
 full suite per chaos level, with healing on/off, and aggregates results into
 this table.
 
-### Decision: why isolate variables per level instead of randomizing everything
+### Refinement: chaos levels as dict, not mechanism count
 
-Considered just exposing all 4 mechanisms as independent toggles with no
-"levels" concept. Rejected — without ordered levels, a failed test gives no
-information about *which* failure mode broke it. Levels give us a built-in
-experiment design for free.
+Initial pivot wrote levels as "LOW = 1 mechanism, CHAOS = 4 mechanisms" —
+still implicitly coupled level to *count*. Corrected to an explicit dict:
+
+```python
+CHAOS_LEVELS = {
+    "LOW": ["selector_rotation"],
+    "MEDIUM": ["selector_rotation", "dom_mutation"],
+    "HIGH": ["selector_rotation", "dom_mutation", "async_delay"],
+    "CHAOS": ["selector_rotation", "dom_mutation", "async_delay", "shadow_dom"],
+}
+```
+
+Reasoning: a level represents a **research scenario**, not a quantity of
+chaos. The moment a 5th mechanism gets added (e.g. `a11y_noise`,
+`locale_switch`, `feature_flags` — plausible future additions), a
+count-based model breaks immediately. A dict model doesn't care how many
+mechanisms exist; it only cares which ones belong to which named scenario.
+
+### Refinement: mechanism realism ranking
+
+Not all 4 mechanisms are equally representative of real-world failures.
+Ranked by how often each actually causes test breakage in production
+frontends:
+
+| Mechanism         | Realism | Why |
+|-------------------|---------|-----|
+| DOM Mutation      | 10/10   | Any UI library refactor, wrapper changes, component migrations |
+| Selector Rotation | 9/10    | Classic — renamed class/id/data-testid |
+| Async Delay       | 8/10    | Lazy loading, animations, network-dependent rendering |
+| Shadow DOM        | 5/10    | Real but narrower — mostly Web Components / LWC-style platforms |
+
+Consequence: mechanisms are not equal in scope. DOM Mutation deserves the
+most internal variants (wrap in extra element, change tag type, change
+nesting depth, reorder siblings) since it's the highest-realism failure
+mode. Shadow DOM can stay a simpler single-variant toggle — it's real, but
+narrower in applicability.
+
+Structural decision: each mechanism gets its own module under `chaos/`:
+```
+chaos/
+├── selector_rotation.py
+├── dom_mutation.py     ← gets the most internal complexity
+├── async_delay.py
+└── shadow_dom.py
+```
+
+### Refinement: Shadow DOM decoupled from CHAOS_LEVELS — becomes an orthogonal flag
+
+Realism ranking above (5/10 vs 8-10/10 for the rest) raised a structural
+question: should Shadow DOM be the "top" of a linear chaos progression, or
+is it a fundamentally different *kind* of difficulty?
+
+Decision: **orthogonal flag**, not a level. Shadow DOM isn't "more chaos" —
+it's a different axis entirely (structural DOM access vs. selector/timing
+volatility). Folding it into CHAOS_LEVELS as step 4 implied "harder than
+async_delay," which isn't true — it's just *different*.
+
+```python
+CHAOS_LEVELS = {
+    "LOW": ["selector_rotation"],
+    "MEDIUM": ["selector_rotation", "dom_mutation"],
+    "HIGH": ["selector_rotation", "dom_mutation", "async_delay"],
+}
+
+# Independent of chaos_level — combinable with any level
+SHADOW_DOM_ENABLED = False  # env: SHADOW_DOM_ENABLED=true
+```
+
+This means a test run can be `HIGH + shadow_dom_enabled=true` — testing
+"refactor + timing + structural access" as an explicit combination, rather
+than forcing it to only exist at the top of one fixed ladder. Benchmark
+runner in Sprint 7 gains a second dimension to report on: chaos_level ×
+shadow_dom flag, instead of one flat list of 4 levels.
+
+Consequence: `get_mechanisms_for_level()` returns only the level's list;
+shadow DOM is checked separately via the flag, not included in that list.
+`CHAOS` as a level name is retired — `HIGH` becomes the ceiling of the
+linear progression, and shadow DOM rides on top of any level via the flag.
+
+
+
+Beyond just `chaos_level`, tests and the future benchmark runner need a
+single source of truth for "what mechanisms are actually active right now."
+
+```python
+active_mechanisms = get_mechanisms_for_level(chaos_level)
+```
+
+This closes the loop into Sprint 7 for free: the benchmark runner iterates
+`CHAOS_LEVELS`, calls this helper, runs the suite, and already has the
+mechanism list to log alongside the pass rate — no separate bookkeeping
+needed.
 
 ---
 
 ## TODO (future sprints)
-- Sprint 1: DOM structure mutation engine needs to be a first-class mechanism, not a minor toggle — see pivot above
+- Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
+- Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
+- Sprint 1: dom_mutation.py gets most internal variants (wrap/retag/nest/reorder) — highest realism mechanism
+- Sprint 1: implement `get_mechanisms_for_level()` helper — returns level's mechanism list only; shadow_dom checked separately
+- Sprint 1: parametrize chaos tests by `chaos_level` AND `shadow_dom_enabled` from the start — avoids rewriting tests in Sprint 7
 - Sprint 2: decide on DOM snapshot strategy (full HTML vs targeted subtree)
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
-- Sprint 7: benchmark runner — execute full suite per chaos level (healing on/off), aggregate into Pass Before/After Heal table
+- Sprint 7: benchmark runner — iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination
