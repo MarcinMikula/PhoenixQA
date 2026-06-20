@@ -12,8 +12,8 @@
 
 ## 🧠 What is this?
 
-Frontend tests break constantly — not because the feature is broken, but because a selector changed.
-A class was renamed. A `data-testid` moved. A Shadow DOM appeared. An iframe wrapped a component.
+Frontend tests break constantly — not because the feature is broken, but because the page underneath it changed.
+A class was renamed. A `data-testid` rotated. A wrapper `<div>` appeared around a button after a refactor. A component moved into a Shadow DOM boundary.
 
 **PhoenixQA** intercepts those failures, feeds the context to an LLM, and either:
 - proposes a fix for human review (**Safe Mode**)
@@ -47,7 +47,30 @@ LLM Analyzer             ← Ollama (local) or Anthropic API
 
 ---
 
-## 🗂️ Project Structure
+## 🧪 Chaos Levels — a benchmark, not just randomness
+
+Chaos App isn't randomized weirdness — each level isolates one variable and answers a specific research question. This is closer to a controlled experiment than a typical "Playwright + sample app" portfolio repo.
+
+| Level  | Mechanisms (cumulative)              | Research question |
+|--------|----------------------------------------|--------------------|
+| LOW    | selector rotation                       | Does the test survive a selector rename? |
+| MEDIUM | + DOM structure mutation                | Does the test survive a UI refactor? |
+| HIGH   | + async delay                           | Does the test survive a refactor + timing issues? |
+
+**Shadow DOM is a separate, independent flag** (`SHADOW_DOM_ENABLED`), not a 4th level — it's a different *kind* of difficulty (structural DOM access), combinable with any level above (e.g. `HIGH + Shadow DOM` tests refactor + timing + structural access at once).
+
+Mechanisms ranked by real-world realism (most enterprise frontends break this way most often):
+
+| Mechanism         | Realism | Why |
+|--------------------|---------|-----|
+| DOM Mutation       | 10/10   | UI library upgrades, wrapper changes, component migrations |
+| Selector Rotation  | 9/10    | Classic — renamed class/id/data-testid |
+| Async Delay        | 8/10    | Lazy loading, animations, network-dependent rendering |
+| Shadow DOM         | 5/10    | Real, but narrower — mostly Web Components / LWC-style platforms |
+
+End goal (Sprint 7): run the full suite at every level, healing on vs off, and publish a measured effectiveness table — not just "it works," but "here's how much it helps."
+
+
 
 ```
 PhoenixQA/
@@ -84,7 +107,7 @@ Switch via single env variable. No code changes.
 | Sprint   | Focus                                                         | Status     |
 |----------|---------------------------------------------------------------|------------|
 | Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
-| Sprint 1 | Chaos App — React/Vite with configurable DOM instability      | ⏳ Planned  |
+| Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
 | Sprint 2 | Context Collector — DOM snapshot, screenshot, logs            | ⏳ Planned  |
 | Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response   | ⏳ Planned  |
 | Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
@@ -102,17 +125,31 @@ Switch via single env variable. No code changes.
 git clone https://github.com/MarcinMikula/PhoenixQA.git
 cd PhoenixQA
 
-# 2. Install
+# 2. Install Python deps
 pip install -r requirements.txt
 playwright install chromium
 
 # 3. Configure
 cp .env.example .env
-# Edit .env — choose AI provider
+# Edit .env — choose AI provider, chaos level
 
-# 4. Run (coming Sprint 1+)
-python -m phoenix
+# 4. Run the Chaos App (test target)
+cd chaos_app
+npm install
+cp .env.example .env
+npm run dev
+# → http://localhost:5173
+
+# 5. Run tests against it (Healer lands in Sprint 4/5)
+cd ..
+pytest tests/chaos/ -m chaos
 ```
+
+---
+
+## 🎬 Demo
+
+*(Parked until Sprint 5+ — once the Healer is actually catching and fixing failures, this section gets real screenshots/GIFs of a test failing on a rotated selector, healing, and going green. Not worth showing a static form screenshot before there's something to demonstrate.)*
 
 ---
 
