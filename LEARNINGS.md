@@ -198,13 +198,90 @@ exists standalone, only with a rotating suffix attached.
 
 ---
 
+## Sprint 2 (pre-coding)
+
+### Decision: DOM snapshot strategy — subtree with landmark fallback, not full HTML
+
+Considered two options for what Context Collector hands to the LLM:
+
+**Full page HTML** — rejected for real enterprise targets (SAP, Salesforce,
+CBS-style platforms). These generate enormous DOM trees (Lightning
+components, Fiori re-renders). Full HTML is expensive in tokens, slow, and
+— worse — dilutes signal. The failure has one specific cause in one specific
+place; burying it in the whole page makes the LLM's job harder, not easier.
+
+**Targeted subtree** — selected. But not naive "go N levels up from the
+broken selector." Real strategy needs:
+1. Don't search FOR the broken element (that's the thing that's missing) —
+   search for the nearest STABLE reference point: a parent with a real
+   `id`, ARIA role, or another `data-testid` likely to survive a refactor.
+2. Walk UP toward landmarks, not down into children — the context that
+   explains "what is this element" usually lives in a parent (form label,
+   section heading), not in what the broken element itself contains.
+3. MUST pierce Shadow DOM boundaries explicitly. `outerHTML` does not
+   cross into a shadow root — for elements inside `<phoenix-chaos-shadow-host>`,
+   the collector has to walk into `.shadowRoot` directly or it captures an
+   empty host tag with nothing useful inside.
+4. Dual limit: max depth AND max character count, whichever hits first.
+   "Walk 3 levels up" sometimes lands on a single useful section, sometimes
+   lands on `<div id="app-root">` with 500 children (the whole layout) —
+   needs both guards, not just one.
+
+### Future consideration: baseline snapshotting on green tests (revisit Sprint 6)
+
+Brainstormed idea, deliberately NOT in scope for Sprint 2 — recording so it
+isn't lost.
+
+Idea: instead of only collecting context reactively when a test FAILS,
+also snapshot the locator + its DOM context whenever a test PASSES. This
+gives the Healer a historical "last known good" reference to diff against,
+instead of reconstructing context from scratch at failure time only.
+
+Why this is appealing: a diff-based signal ("this selector used to point
+to the 2nd input inside `.chaos-form`; now no exact match exists, but
+there's an `<input>` in the same structural position with a different
+suffix — high-confidence match") is qualitatively stronger than guessing
+purely from the DOM at failure time.
+
+Why this is NOT happening now: it changes `BasePage` from "healing is
+opt-in at failure" to "logging is always-on for every test run," even
+ones that never need healing. It also means the history database grows
+unboundedly without a retention strategy (e.g. "keep only latest known-good
+snapshot per locator," not full history of every run).
+
+Why this isn't wasted scope creep: this isn't a 4th independent system —
+it's a natural extension of `history_store.py` (Sprint 6), which already
+exists to store healing decisions. Adding "also store baseline snapshots
+on green runs" is deepening that one component, not adding a new one.
+Revisit when Sprint 6 is actually being built.
+
+**Precise framing for future comparison** (added after follow-up discussion):
+this isn't just "should we add baseline snapshotting" — it's a genuine
+architectural fork worth measuring, not guessing about:
+
+```
+Approach A (current plan):  DOM → LLM → fix
+Approach B (future option): historical fingerprint + current DOM → LLM → fix
+```
+
+The Healing Benchmark Runner (Sprint 7) is what makes this comparison real
+instead of a hunch — once it exists, both approaches can be run through
+the same Pass Before/After Heal table, per chaos level, and the question
+becomes answerable with numbers: does the historical fingerprint produce
+a measurably higher heal rate, or just more complexity for the same
+outcome? Don't implement Approach B until Approach A has a benchmark
+baseline to compare against.
+
+---
+
 ## TODO (future sprints)
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
 - Sprint 1: dom_mutation.py gets most internal variants (wrap/retag/nest/reorder) — highest realism mechanism
 - Sprint 1: implement `get_mechanisms_for_level()` helper — returns level's mechanism list only; shadow_dom checked separately
 - Sprint 1: parametrize chaos tests by `chaos_level` AND `shadow_dom_enabled` from the start — avoids rewriting tests in Sprint 7
-- Sprint 2: decide on DOM snapshot strategy (full HTML vs targeted subtree)
+- Sprint 2: implement subtree extraction with landmark fallback (walk up to nearest stable id/role/data-testid), explicit shadowRoot piercing, dual depth+size limit — decision made, now build it
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
+- Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing
 - Sprint 7 (renamed: "Healing Benchmark Runner" — name now matches what it actually does): iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination. Few-shot self-training stays in scope as a sub-component, not the headline.
