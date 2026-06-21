@@ -207,4 +207,4 @@ exists standalone, only with a rotating suffix attached.
 - Sprint 2: decide on DOM snapshot strategy (full HTML vs targeted subtree)
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
-- Sprint 7: benchmark runner — iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination
+- Sprint 7 (renamed: "Healing Benchmark Runner" — name now matches what it actually does): iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination. Few-shot self-training stays in scope as a sub-component, not the headline.

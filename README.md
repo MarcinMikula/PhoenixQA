@@ -113,7 +113,7 @@ Switch via single env variable. No code changes.
 | Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
 | Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop              | ⏳ Planned  |
 | Sprint 6 | Healing History — SQLite store, decision log                  | ⏳ Planned  |
-| Sprint 7 | Self-Training Loop — few-shot builder, Safe vs Auto metrics   | ⏳ Planned  |
+| Sprint 7 | Healing Benchmark Runner — few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 8 | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
 
 ---
