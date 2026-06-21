@@ -68,6 +68,16 @@ Mechanisms ranked by real-world realism (most enterprise frontends break this wa
 | Async Delay        | 8/10    | Lazy loading, animations, network-dependent rendering |
 | Shadow DOM         | 5/10    | Real, but narrower — mostly Web Components / LWC-style platforms |
 
+**Controlling the chaos level:**
+
+```bash
+# chaos_app/.env
+VITE_CHAOS_LEVEL=HIGH            # LOW | MEDIUM | HIGH
+VITE_SHADOW_DOM_ENABLED=true     # true | false — independent of level
+```
+
+Edit `chaos_app/.env`, then restart `npm run dev`. The "Active chaos config" panel at the top of the running app confirms which mechanisms are live — no guessing required.
+
 End goal (Sprint 7): run the full suite at every level, healing on vs off, and publish a measured effectiveness table — not just "it works," but "here's how much it helps."
 
 
