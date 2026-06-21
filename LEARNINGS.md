@@ -227,7 +227,77 @@ broken selector." Real strategy needs:
    lands on `<div id="app-root">` with 500 children (the whole layout) —
    needs both guards, not just one.
 
-### Future consideration: baseline snapshotting on green tests (revisit Sprint 6)
+### Refinement: scoring must start from the selector name, not DOM position
+
+Initial subtree strategy ("walk up to nearest visible form/section") was
+caught as flawed before any code was written — worth recording why, since
+it's a subtle trap. With multiple forms on a page (e.g. a login form AND a
+newsletter signup in a header), "first visible form" can land on something
+completely unrelated to the broken selector. It would have looked like it
+worked on Chaos App (single form per view) and silently produced garbage
+context on any real multi-section enterprise page.
+
+Corrected approach: start from the only real signal we actually have —
+the broken selector's name itself.
+
+1. **Tokenize the broken selector.** `[data-testid='username-ab12']` →
+   `["username"]`. Random rotation suffixes (short alphanumeric tails like
+   `ab12`, `rwp4`) must be filtered out — they're noise from our own
+   `selectorRotation.js`, not signal.
+2. **Score every element in the DOM** against those tokens, checking
+   `data-testid`, `aria-label`, `name`, `placeholder`, `id`, `textContent`.
+3. **Weighted scoring, not flat +1 per match.** An intentional test hook
+   (`data-testid`) is a much stronger signal than an incidental text match
+   (`textContent`):
+
+   | Source        | Weight |
+   |----------------|--------|
+   | data-testid    | 5      |
+   | aria-label     | 4      |
+   | name           | 4      |
+   | placeholder    | 3      |
+   | id             | 2      |
+   | textContent    | 1      |
+
+   Example: `<input data-testid="username-rwp4">` scores 5; a coincidental
+   `<label>Username</label>` scores 1 — a 5x gap instead of a tie, which
+   flat scoring would have produced.
+4. **Ties are kept, not arbitrarily broken.** If multiple elements score
+   equally, all of them get included as candidates rather than picking one
+   at random — the LLM gets real ambiguity to reason about instead of a
+   silently wrong guess.
+5. **Only THEN walk up** via `closest('form, section, [role]')` — from the
+   best-scoring candidate, not from an arbitrary DOM position.
+6. **Shadow DOM check moves to the END**, not the start. Originally planned
+   to scan for all shadow hosts upfront "just in case." Corrected: score
+   candidates first (now knowing what we're looking for), then check
+   whether the winning candidate lives inside a shadow root — more
+   precise, cheaper in tokens, since `document.querySelectorAll` never
+   sees inside shadow roots anyway and a separate shadow-piercing pass is
+   needed regardless.
+
+### Known fragility, deliberately not fixed in Sprint 2: outerHTML re-matching
+
+Scoring runs in one `page.evaluate()` call and returns `outerHTML` strings.
+A second `page.evaluate()` then re-finds the "same" element by matching
+that string — but identical elements (e.g. repeated table rows, two
+buttons both rendering "Save") collide. Whichever matches first wins,
+which may not be the one that was actually scored.
+
+Not blocking Sprint 2 — Chaos App's current components don't yet trigger
+this collision in practice. But explicitly tracked, since it's the kind of
+bug that fails silently (looks like it works, quietly hands the LLM
+context for the wrong element) rather than loudly:
+
+```python
+# TODO Sprint 3:
+# Re-finding elements via outerHTML string match is fragile — identical
+# elements collide (e.g. repeated table rows). Replace with: keep the
+# Playwright ElementHandle (or a unique DOM ancestor path) from the SAME
+# evaluate() call that scored it, instead of re-querying a second time.
+```
+
+
 
 Brainstormed idea, deliberately NOT in scope for Sprint 2 — recording so it
 isn't lost.
@@ -280,7 +350,8 @@ baseline to compare against.
 - Sprint 1: dom_mutation.py gets most internal variants (wrap/retag/nest/reorder) — highest realism mechanism
 - Sprint 1: implement `get_mechanisms_for_level()` helper — returns level's mechanism list only; shadow_dom checked separately
 - Sprint 1: parametrize chaos tests by `chaos_level` AND `shadow_dom_enabled` from the start — avoids rewriting tests in Sprint 7
-- Sprint 2: implement subtree extraction with landmark fallback (walk up to nearest stable id/role/data-testid), explicit shadowRoot piercing, dual depth+size limit — decision made, now build it
+- Sprint 2: implement weighted semantic scoring (tokenize broken_selector, score DOM elements by data-testid/aria-label/name/placeholder/id/textContent with weights 5/4/4/3/2/1), THEN closest(form/section) from best candidate, THEN shadow DOM check — not naive "first visible landmark"
+- Sprint 3: replace outerHTML re-matching with stored ElementHandle / unique ancestor path — identical elements currently collide
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
 - Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing
