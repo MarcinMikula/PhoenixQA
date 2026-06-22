@@ -198,9 +198,98 @@ exists standalone, only with a rotating suffix attached.
 
 ---
 
-## Sprint 2 (pre-coding)
+## Sprint 2 (pre-coding) — Major scope decision: FailureType classification
 
-### Decision: DOM snapshot strategy — subtree with landmark fallback, not full HTML
+### Gap analysis before writing code
+
+Before implementing Context Collector, four architectural gaps were
+identified by reviewing the roadmap critically:
+
+1. **No definition of "healing correctness"** — test passing after a fix
+   ≠ fix is actually correct (e.g. LLM changes `[data-testid='save']` to
+   `button`, test passes, but clicks the wrong button if multiple buttons
+   exist). Affects Sprint 6 (Healing History schema) — must be resolved
+   before that schema is designed, not before Sprint 2.
+2. **No confidence score in the pipeline** — actually already planned:
+   `HealingProposal.confidence: float` exists in `base_provider.py` since
+   Sprint 0. Not a gap, just not yet implemented (lands in Sprint 3).
+3. **No post-heal business-level validation** — "selector exists" ≠
+   "business action succeeded" (click(save) should also verify a toast
+   appeared / record persisted / URL changed, not just that the click
+   didn't throw). Naturally belongs to Sprint 4/5 (Safe/Autonomous Mode) —
+   can't be built before there's a fix to validate.
+4. **Scope question: "selector healer" vs "UI automation healer"** — see
+   below. This is the one gap that required a decision BEFORE Sprint 2
+   code, because it changes the shape of `HealingContext` itself.
+
+Gaps 1-3 are tracked but don't block Sprint 2 — they're naturally
+sequenced into later sprints by the existing roadmap. Gap 4 required
+immediate resolution.
+
+### Decision: FailureType classification — selector vs timing vs visibility vs detachment
+
+Real-world input (13+ years across telco/banking, recent hands-on
+Salesforce Lightning experience): the MOST COMMON real enterprise SPA
+failure is NOT a renamed selector — it's **timing-related**:
+
+- **Detached from DOM**: element is found, but Lightning re-renders the
+  component between `find` and `click` — the element reference becomes
+  stale mid-action. Different failure mechanism than "never existed."
+- **Spinner/render race**: network call finishes, but frontend hasn't
+  finished re-rendering yet — element exists but isn't actionable.
+- **Not visible**: element is in the DOM but hidden behind an overlay,
+  spinner, or not-yet-expanded section.
+
+This means "selector healer" (current architecture — Context Collector
+designed in this sprint) and "UI automation healer" (README's broader
+framing) are NOT competing scopes to choose between — they're different
+**categories of the same higher-level problem**: "test fails even though
+the application is working correctly." Conflating them would have made
+Sprint 2's Context Collector too narrow to be useful on the failure types
+that actually dominate in production.
+
+**Resolution — phased, not all-at-once:**
+
+```python
+class FailureType(Enum):
+    SELECTOR_NOT_FOUND = "selector_not_found"   # element never existed with this selector
+    DETACHED_FROM_DOM = "detached_from_dom"      # existed, framework removed it mid-action
+    NOT_VISIBLE = "not_visible"                  # in DOM, but hidden (spinner, overlay)
+    TIMEOUT_WAITING = "timeout_waiting"           # never reached an actionable state
+```
+
+Context Collector gets a classification step BEFORE context gathering:
+
+```python
+def collect_failure_context(page, error, original_code, broken_selector=None):
+    failure_type = classify_playwright_error(error)
+    # routes to a different context-gathering strategy per type —
+    # semantic scoring (designed earlier this sprint) only applies to
+    # SELECTOR_NOT_FOUND; other types need timing/render-state data instead
+```
+
+**Sprint 2 scope (decided): SELECTOR_NOT_FOUND only.** The semantic-scoring
+algorithm designed earlier this sprint is fully built and verified
+end-to-end (Collector → LLM Analyzer → Healer) for this one failure type
+first. Reasoning: better to prove the full Sprint 2→3→4 pipeline works
+correctly on one well-understood failure type than to spread effort thin
+across four loosely-built ones.
+
+**Explicitly NOT abandoned — tracked as required, not optional:**
+DETACHED_FROM_DOM, NOT_VISIBLE, and TIMEOUT_WAITING handling MUST be built
+later (their own sprint or folded into Sprint 3). This is the single
+biggest scope expansion in the project's history — README and roadmap
+both need to reflect it, since "self-healing for selectors" and
+"self-healing for UI automation broadly" are different promises to make
+to a reader.
+
+**Consequence for Chaos App:** none of the current 4 chaos mechanisms
+simulate DETACHED_FROM_DOM or render-race conditions. A future chaos
+mechanism (e.g. "component remounts N ms after initial render" or
+"element removed and re-added during an in-flight click") will likely be
+needed once this expanded scope is actually implemented.
+
+
 
 Considered two options for what Context Collector hands to the LLM:
 
@@ -344,14 +433,125 @@ baseline to compare against.
 
 ---
 
+### Major gap analysis: four architectural gaps identified before writing Sprint 2 code
+
+Before implementing the Context Collector pseudo-code above, a deeper
+review surfaced four gaps in the project's architecture. Recording all
+four and how each was resolved or deferred — this is the most consequential
+planning discussion so far, since one of the four gaps changes the shape
+of `HealingContext` itself.
+
+**Gap #1 — No formal definition of "healing correctness."**
+Roadmap currently implicitly assumes: LLM proposes fix → test passes →
+success. But "test passes" ≠ "fix is correct." Example: original selector
+targeted a specific Save button; LLM widens it to a generic `button`
+selector; test technically passes but now clicks the wrong element. Without
+a definition of *correctness* (not just *pass rate*), all downstream
+metrics (success rate, healing rate, benchmark results, self-training
+signal) are measuring the wrong thing — could show "90% healed" while only
+"30% actually correct."
+Status: **not blocking Sprint 2.** Context Collector gathers data
+regardless of how correctness gets defined later. But this MUST be
+resolved before Sprint 6 (Healing History schema needs a place to record
+correctness, not just pass/fail).
+
+**Gap #2 — No confidence score in the LLM response structure.**
+Safe Mode and Autonomous Mode both need a confidence signal to route
+decisions (e.g. 95% → auto-apply, 60% → human review, 20% → reject).
+Status: **already scaffolded.** `HealingProposal.confidence: float` exists
+in `base_provider.py` since Sprint 0 — this isn't a missing gap, it's an
+unimplemented field waiting for Sprint 3 (LLM Analyzer) to actually
+populate it meaningfully.
+
+**Gap #3 — No validation of business-level success after applying a fix.**
+Current plan: apply fix → re-run → green. But "selector now resolves" is
+not the same as "the intended action actually happened." Example: `click(save)`
+succeeding at the DOM level doesn't confirm a toast appeared, a record was
+saved, or the URL changed — i.e. selector existing ≠ business action
+succeeding.
+Status: **not blocking Sprint 2.** Logically can't be built before Sprint
+4/5 (Safe/Autonomous Mode) exist to apply fixes in the first place — but
+explicitly tracked as required scope for those sprints, not an afterthought.
+
+**Gap #4 — Scope ambiguity: "selector healer" vs "UI automation healer."**
+This was the one gap that DOES block Sprint 2, because it changes the
+shape of `HealingContext` before any code gets written.
+
+Architecture so far (Chaos App mechanisms, Context Collector pseudo-code)
+implicitly assumes the failure mode is always "selector doesn't resolve."
+But real enterprise SPAs (confirmed against direct Salesforce Lightning
+experience) most commonly fail differently — not selector renaming, but
+**timing**: an element is found, then detaches from the DOM mid-action
+because the framework re-renders the component between `find` and `click`;
+or a spinner disappears but the component hasn't finished re-rendering; or
+a network call completes before the frontend finishes drawing the result.
+These are categorically different failures (`StaleElementReference`-style,
+not `TimeoutError`-on-locate-style) requiring different collected context
+and a different LLM prompt — "propose a new selector" vs. "propose a
+waiting/retry strategy" are different tasks.
+
+**Resolution — staged scope, not a binary A/B choice:**
+
+```python
+from enum import Enum
+
+class FailureType(Enum):
+    SELECTOR_NOT_FOUND = "selector_not_found"   # element never existed with this selector
+    DETACHED_FROM_DOM = "detached_from_dom"      # existed, framework removed it mid-action
+    NOT_VISIBLE = "not_visible"                  # exists in DOM, but not visible (spinner/overlay)
+    TIMEOUT_WAITING = "timeout_waiting"           # never reached an actionable state
+```
+
+Context Collector routes by failure type from the start:
+
+```python
+def collect_failure_context(page, error, original_code, broken_selector=None):
+    failure_type = classify_playwright_error(error)
+    if failure_type == FailureType.SELECTOR_NOT_FOUND:
+        return collect_selector_context(...)   # the semantic-scoring approach above
+    elif failure_type == FailureType.DETACHED_FROM_DOM:
+        return collect_timing_context(...)      # NOT YET DESIGNED — different data needed
+    elif failure_type == FailureType.NOT_VISIBLE:
+        return collect_visibility_context(...)  # NOT YET DESIGNED
+    # ...
+```
+
+**Decision: Sprint 2 implements ONLY `SELECTOR_NOT_FOUND` fully** (the
+semantic-scoring pseudo-code already designed above). The `FailureType`
+enum and routing function are built now so the architecture doesn't need
+reshaping later, but `DETACHED_FROM_DOM` / `NOT_VISIBLE` / `TIMEOUT_WAITING`
+branches are explicit `NotImplementedError` placeholders.
+
+**This is a confirmed, MANDATORY future scope expansion, not an optional
+nice-to-have** — direct production experience (Salesforce Lightning)
+confirms timing/detachment failures are the most common real-world case,
+more common than selector renaming. Reasoning for sequencing anyway:
+verify the full Sprint 2→3→4 flow works end-to-end on one well-understood
+failure type first, then extend to the others with working knowledge of
+what the end-to-end pipeline actually needs — rather than designing three
+failure-type pipelines simultaneously before any of them have been proven.
+
+Practical consequence: Chaos App will eventually need a 5th mechanism
+(or an extension to existing ones) that simulates re-render-mid-action /
+detachment — `async_delay` alone doesn't currently simulate "element
+existed, then got removed and replaced." This is new scope for the Chaos
+App, not just for `phoenix/collector/`.
+
+---
+
 ## TODO (future sprints)
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
 - Sprint 1: dom_mutation.py gets most internal variants (wrap/retag/nest/reorder) — highest realism mechanism
 - Sprint 1: implement `get_mechanisms_for_level()` helper — returns level's mechanism list only; shadow_dom checked separately
 - Sprint 1: parametrize chaos tests by `chaos_level` AND `shadow_dom_enabled` from the start — avoids rewriting tests in Sprint 7
+- Sprint 2: implement FailureType classification (classify_playwright_error) as the entry point to Context Collector — even though only SELECTOR_NOT_FOUND gets a full strategy this sprint, the routing structure must exist now
 - Sprint 2: implement weighted semantic scoring (tokenize broken_selector, score DOM elements by data-testid/aria-label/name/placeholder/id/textContent with weights 5/4/4/3/2/1), THEN closest(form/section) from best candidate, THEN shadow DOM check — not naive "first visible landmark"
 - Sprint 3: replace outerHTML re-matching with stored ElementHandle / unique ancestor path — identical elements currently collide
+- Sprint 3 or its own sprint (REQUIRED, not optional): implement DETACHED_FROM_DOM context-gathering strategy — most common real-world Salesforce/Lightning-style failure per hands-on experience
+- Sprint 3 or its own sprint (REQUIRED, not optional): implement NOT_VISIBLE and TIMEOUT_WAITING strategies
+- Future: Chaos App needs a new mechanism simulating component remount / detach-mid-action to actually test DETACHED_FROM_DOM handling — doesn't exist yet in current 4 mechanisms
+- Before Sprint 6: resolve "healing correctness" definition (test passing ≠ fix is correct) before designing Healing History schema
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
 - Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing

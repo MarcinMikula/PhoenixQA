@@ -21,6 +21,31 @@ A class was renamed. A `data-testid` rotated. A wrapper `<div>` appeared around 
 
 Every decision is logged. Every logged decision improves future healing (**Self-Training Loop**).
 
+### Scope: where this starts, and where it's going
+
+"Test fails even though the app is fine" has more than one root cause.
+Real-world experience (Salesforce Lightning, enterprise SPAs) shows the
+**most common** failure isn't actually a renamed selector — it's timing:
+an element gets detached from the DOM mid-action because the framework
+re-rendered, or a spinner disappears before the frontend has actually
+finished updating.
+
+PhoenixQA classifies failures into four types, but builds them in phases
+rather than all at once:
+
+| Failure type | Status |
+|---|---|
+| `selector_not_found` — classic renamed/rotated selector | 🚧 Building first (Sprint 2-5) |
+| `detached_from_dom` — framework re-render mid-action | 🔜 Required, not yet built |
+| `not_visible` — element exists but hidden/blocked | 🔜 Required, not yet built |
+| `timeout_waiting` — never reaches an actionable state | 🔜 Required, not yet built |
+
+Why phase it: better to prove the full pipeline (collect → analyze → heal
+→ validate) end-to-end on one well-understood failure type first, then
+extend to the others with real lessons learned — rather than build four
+shallow strategies at once. The other three are committed scope, not a
+"maybe later" — see `LEARNINGS.md` for the full reasoning.
+
 ---
 
 ## 🏗️ Architecture
@@ -118,13 +143,14 @@ Switch via single env variable. No code changes.
 |----------|---------------------------------------------------------------|------------|
 | Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
 | Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
-| Sprint 2 | Context Collector — DOM snapshot, screenshot, logs            | ⏳ Planned  |
-| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response   | ⏳ Planned  |
+| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ⏳ Planned  |
+| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ⏳ Planned  |
 | Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
-| Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop              | ⏳ Planned  |
-| Sprint 6 | Healing History — SQLite store, decision log                  | ⏳ Planned  |
-| Sprint 7 | Healing Benchmark Runner — few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
-| Sprint 8 | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
+| Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation | ⏳ Planned  |
+| Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
+| Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
+| Sprint 8 | Healing Benchmark Runner — few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
+| Sprint 9 | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
 
 ---
 
