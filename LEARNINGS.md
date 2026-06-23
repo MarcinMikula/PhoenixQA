@@ -477,37 +477,6 @@ explicitly tracked as required scope for those sprints, not an afterthought.
 This was the one gap that DOES block Sprint 2, because it changes the
 shape of `HealingContext` before any code gets written.
 
-**Gap #10 — Autonomous healing without boundaries.**
-This gap does not block Sprint 2 implementation directly, but it blocks
-any realistic Autonomous Mode architecture.
-
-Initial assumption:
-If healing fails, try another repair.
-
-Updated understanding:
-Unbounded autonomous healing creates a new failure mode:
-infinite repair loops.
-
-A failed repair attempt is acceptable.
-An infinite repair loop is not.
-
-Architectural consequence:
-Autonomous healing requires explicit guardrails before production use.
-
-Required stop conditions:
-- max attempts
-- confidence threshold
-- time budget
-- cost budget
-
-Future implication:
-"Can the AI heal this?" is only half of the problem.
-Equally important is "When should the AI stop trying and escalate
-to a human?"
-
-Guardrails are therefore considered a first-class architectural
-component, not an implementation detail.
-
 Architecture so far (Chaos App mechanisms, Context Collector pseudo-code)
 implicitly assumes the failure mode is always "selector doesn't resolve."
 But real enterprise SPAs (confirmed against direct Salesforce Lightning
@@ -568,6 +537,106 @@ detachment — `async_delay` alone doesn't currently simulate "element
 existed, then got removed and replaced." This is new scope for the Chaos
 App, not just for `phoenix/collector/`.
 
+### Gap #9 — missing baseline comparison (no-healer / heuristic / LLM)
+
+Raised in follow-up discussion: the Healing Benchmark Runner (Sprint 7/8)
+as currently scoped only measures "with healing vs without healing." It
+does NOT answer the more important question: **was an LLM actually
+necessary?** A simple heuristic (e.g. fuzzy string match / Levenshtein
+distance between the old and new selector token, ignoring rotation
+suffixes) might solve a large fraction of `selector_not_found` cases with
+zero LLM cost or latency. Without this baseline, the project can show
+"90% healed" without ever proving the LLM contributed anything beyond
+what cheap string matching would have achieved.
+
+This is not a nitpick — it's the difference between "built an LLM-based
+self-healer" (sounds like AI-for-AI's-sake) and "measured exactly where
+LLM reasoning adds value over heuristics, and where it doesn't" (a real
+R&D conclusion, defensible in an interview).
+
+**Resolution:** add a third provider implementing the existing
+`BaseProvider` interface — `HeuristicProvider` — using simple fuzzy
+matching, no LLM call at all. Because the provider abstraction already
+exists (Sprint 0 decision), this costs nothing architecturally: heuristic
+matching is just a third provider, not a separate system. Final benchmark
+table gains a third column:
+
+| Chaos Level | No Healer | Heuristic Healer | LLM Healer |
+|---|---|---|---|
+| LOW    | ~72% | ?% | ~98% |
+| MEDIUM | ~51% | ?% | ~95% |
+| HIGH   | ~29% | ?% | ~90% |
+
+The unknown middle column is the actual experiment. Plausible (and equally
+interesting) outcomes: heuristic matches LLM performance on LOW (simple
+rotations) but falls off sharply on HIGH (structural DOM changes need real
+reasoning) — or heuristic stays surprisingly competitive everywhere, which
+would be an honest, valuable conclusion in its own right ("LLM isn't
+strictly necessary for healing, but adds explainability heuristics can't").
+
+Status: scoped into Sprint 7/8 (Healing Benchmark Runner), not Sprint 2.
+`HeuristicProvider` needs its own file (`phoenix/ai/heuristic_provider.py`)
+implementing `analyze_failure()` without ever calling an LLM API.
+
+### Gap #10 — missing stop conditions for Autonomous Mode
+
+Raised in follow-up discussion: nothing in the current design prevents
+infinite retry loops. Scenario: LLM fix #1 fails → LLM fix #2 fails → LLM
+fix #3 fails → ... with no defined endpoint. In Autonomous Mode running
+inside CI/CD, this isn't theoretical — it's a direct path to runaway API
+cost and runtime, every single pipeline run, with no human in the loop to
+notice and intervene.
+
+**Resolution:** stop conditions are a BLOCKING requirement for Sprint 5
+(Autonomous Mode), not a later hardening pass. Minimum set:
+- `max_attempts` — hard cap on healing retries per failing test (e.g. 3)
+- `max_cost_per_test` — token/API spend ceiling per single healing session
+- `max_time_per_heal` — wall-clock timeout per healing attempt
+
+Autonomous Mode must not ship — even as a Sprint 5 proof-of-concept —
+without these three guards in place. This is unlike most other TODOs in
+this file, which describe future refinements; this one describes a
+precondition for Sprint 5 being considered "done" at all.
+
+### Gap #5 — no failure classifier component (still open)
+
+`FailureType` enum exists, and the Context Collector pseudo-code references
+a `classify_playwright_error()` function — but that function has never
+actually been designed. Right now there's a named intention
+(`Failure -> Classifier -> Strategy`), not an architecture. Before Sprint 2
+code is written, this needs at minimum: a mapping from Playwright exception
+types/messages to `FailureType` values, and a decision on whether
+classification can be done from the exception alone or needs a DOM probe
+(e.g. checking if the element still exists at all vs. exists-but-hidden).
+Tracked as a required Sprint 2 sub-task, not a separate future sprint —
+the collector can't route by failure type without it.
+
+### Gap #7 — no accounting for cost (tokens, storage, runtime)
+
+Stop conditions (Gap #10, `max_cost_per_test`) touch this, but there's been
+no broader reflection on prompt token budgets, DOM snapshot size limits
+in storage (not just in the LLM context window), retention policy for
+`history_store.py` (Sprint 6) — does old healing history get pruned, ever?
+— or wall-clock runtime budget for a full benchmark run across all chaos
+levels. Not blocking any current sprint, but should get a dedicated pass
+once Sprint 6 (history) and Sprint 7/8 (benchmark) are actually being
+built — premature to size these limits before real token/runtime numbers
+exist from Sprint 3/4.
+
+### Gap #8 — screenshot under-weighted vs DOM snapshot
+
+`HealingProposal`/`HealingContext` (Sprint 0) already declares
+`screenshot_path: Optional[str]`, but every Sprint 2 design discussion
+since (semantic scoring, subtree extraction, shadow DOM piercing) has been
+entirely DOM-first. The screenshot field exists on paper but has had zero
+design attention — no decision on when it's actually useful (e.g. visual
+layout bugs a DOM diff can't capture, like an element rendering off-screen
+or behind an overlay) vs. when it's dead weight (most `selector_not_found`
+cases are arguably fully explainable from DOM alone). Worth a deliberate
+decision in Sprint 3 (LLM Analyzer) about whether multimodal input is
+actually part of the v1 prompt or explicitly deferred — right now it's
+neither decided nor implemented, just declared.
+
 ---
 
 ## TODO (future sprints)
@@ -587,3 +656,7 @@ App, not just for `phoenix/collector/`.
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
 - Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing
 - Sprint 7 (renamed: "Healing Benchmark Runner" — name now matches what it actually does): iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination. Few-shot self-training stays in scope as a sub-component, not the headline.
+- Sprint 7/8: implement `HeuristicProvider` (phoenix/ai/heuristic_provider.py) — fuzzy/Levenshtein selector matching, zero LLM calls, same BaseProvider interface — REQUIRED so benchmark proves LLM is actually adding value, not just "healing exists"
+- Sprint 5 (BLOCKING, not optional): implement max_attempts, max_cost_per_test, max_time_per_heal before Autonomous Mode is considered done — no infinite retry loops in CI
+- Sprint 3: decide whether screenshot is actually part of v1 LLM prompt (multimodal) or explicitly deferred — currently declared in HealingContext but has had zero design attention
+- Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4

@@ -103,7 +103,17 @@ VITE_SHADOW_DOM_ENABLED=true     # true | false — independent of level
 
 Edit `chaos_app/.env`, then restart `npm run dev`. The "Active chaos config" panel at the top of the running app confirms which mechanisms are live — no guessing required.
 
-End goal (Sprint 7): run the full suite at every level, healing on vs off, and publish a measured effectiveness table — not just "it works," but "here's how much it helps."
+End goal (Sprint 8 — Healing Benchmark Runner): run the full suite at every level, comparing **No Healer vs. Heuristic Healer vs. LLM Healer** — not just "it works," but "here's exactly how much the LLM adds over a cheap fuzzy-match baseline, and where."
+
+| Chaos Level | No Healer | Heuristic Healer | LLM Healer |
+|---|---|---|---|
+| LOW    | ~72% | ?% | ~98% |
+| MEDIUM | ~51% | ?% | ~95% |
+| HIGH   | ~29% | ?% | ~90% |
+
+The middle column is the actual experiment — a simple fuzzy/Levenshtein selector matcher (zero LLM calls, same provider interface as Anthropic/Ollama) might already solve a surprising fraction of cases. Without this baseline, "90% healed" doesn't prove the LLM was necessary.
+
+**Autonomous Mode has hard stop conditions from day one** (`max_attempts`, `max_cost_per_test`, `max_time_per_heal`) — no infinite LLM retry loops in CI, by design, not as a later hardening pass.
 
 
 
@@ -146,10 +156,10 @@ Switch via single env variable. No code changes.
 | Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ⏳ Planned  |
 | Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ⏳ Planned  |
 | Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
-| Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation | ⏳ Planned  |
+| Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation, stop conditions (max attempts/cost/time) | ⏳ Planned  |
 | Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
 | Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
-| Sprint 8 | Healing Benchmark Runner — few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
+| Sprint 8 | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 9 | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
 
 ---
