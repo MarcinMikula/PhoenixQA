@@ -477,6 +477,37 @@ explicitly tracked as required scope for those sprints, not an afterthought.
 This was the one gap that DOES block Sprint 2, because it changes the
 shape of `HealingContext` before any code gets written.
 
+**Gap #10 — Autonomous healing without boundaries.**
+This gap does not block Sprint 2 implementation directly, but it blocks
+any realistic Autonomous Mode architecture.
+
+Initial assumption:
+If healing fails, try another repair.
+
+Updated understanding:
+Unbounded autonomous healing creates a new failure mode:
+infinite repair loops.
+
+A failed repair attempt is acceptable.
+An infinite repair loop is not.
+
+Architectural consequence:
+Autonomous healing requires explicit guardrails before production use.
+
+Required stop conditions:
+- max attempts
+- confidence threshold
+- time budget
+- cost budget
+
+Future implication:
+"Can the AI heal this?" is only half of the problem.
+Equally important is "When should the AI stop trying and escalate
+to a human?"
+
+Guardrails are therefore considered a first-class architectural
+component, not an implementation detail.
+
 Architecture so far (Chaos App mechanisms, Context Collector pseudo-code)
 implicitly assumes the failure mode is always "selector doesn't resolve."
 But real enterprise SPAs (confirmed against direct Salesforce Lightning
