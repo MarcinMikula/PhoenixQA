@@ -154,7 +154,7 @@ Switch via single env variable. No code changes.
 | Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
 | Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
 | Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
-| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ⏳ Planned  |
+| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
 | Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
 | Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation, stop conditions (max attempts/cost/time) | ⏳ Planned  |
 | Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |

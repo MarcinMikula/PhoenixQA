@@ -709,6 +709,32 @@ before. `defect-pilot`'s `complete_with_images()` pattern (raw base64 in
 the `images` field, no data URI prefix) is already a usable reference for
 that future work.
 
+### Verified: Sprint 3 components built and unit tested (no live Ollama needed yet)
+
+Built `prompt_templates.py` (system + user prompt, SELECTOR_NOT_FOUND
+only — see Gap #4), `response_parser.py` (defensive JSON extraction), and
+`ollama_provider.py` (httpx-based, mirrors defect-pilot's convention
+exactly: `/api/generate`, `stream: False`, `is_available()`-style health
+check via `/api/tags`).
+
+Caught a real bug while writing parser tests, same pattern as Sprint 2's
+rotation-suffix regex bug: `_extract_json_text`'s bare-object regex
+(`\{.*\}`) requires a closing brace, so a TRUNCATED response (model cut
+off mid-generation — a realistic failure mode, not a contrived edge case)
+never matched the regex at all. This produced a misleading "No JSON
+object found" message instead of the more honest "JSON parse error" —
+the model clearly tried to respond, it just didn't finish. Fixed by
+adding a third fallback: if no complete `{...}` block matches, take
+everything from the first `{` onward and let `json.loads()` produce a
+real parse error. 10/10 parser unit tests pass; 21/21 total unit tests
+pass project-wide.
+
+Not yet tested: an actual live call to `OllamaProvider.analyze_failure()`
+against running Ollama + llama3.2. That's the next concrete step — verify
+the prompt actually produces usable selector proposals against real
+Chaos App DOM context, not just that the parsing plumbing works on
+hand-crafted sample strings.
+
 ---
 
 ## TODO (future sprints)
