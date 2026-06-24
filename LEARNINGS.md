@@ -537,6 +537,28 @@ detachment — `async_delay` alone doesn't currently simulate "element
 existed, then got removed and replaced." This is new scope for the Chaos
 App, not just for `phoenix/collector/`.
 
+**Confirmed: deliberately deferred to Sprint 6, not built now.** Decision
+reaffirmed in a direct follow-up ("ship one working slice end-to-end,
+then expand") rather than building all failure-type mechanisms in
+parallel before any of them are proven through the full pipeline.
+
+Concrete spec for Sprint 6, so this isn't just a vague reminder:
+- New file: `chaos_app/src/chaos/componentRemount.jsx` — wraps a target
+  element; on interaction (or after a short delay), unmounts and
+  re-mounts it as a genuinely new DOM node (not just a re-render — the
+  old node must actually be replaced, mirroring what Lightning does)
+  while keeping it visually identical, so the failure is purely structural
+  / timing-based, not visually detectable.
+- Also worth closing explicitly in Sprint 6: `asyncDelay.js` already
+  produces an invisible→visible transition (via `useChaosDelay`), which
+  incidentally covers part of `NOT_VISIBLE` — but this was never named as
+  intentional coverage for that failure type. Sprint 6 should make this
+  explicit (comment + LEARNINGS note) rather than leaving accidental
+  overlap undocumented.
+- `TicketList.jsx`'s three structurally-identical rows (`TCK-001/002/003`)
+  already provide a ready-made test case for the Sprint 3 `outerHTML`
+  collision TODO — no new Chaos App code needed for that specific gap.
+
 ### Gap #9 — missing baseline comparison (no-healer / heuristic / LLM)
 
 Raised in follow-up discussion: the Healing Benchmark Runner (Sprint 7/8)
