@@ -659,6 +659,31 @@ decision in Sprint 3 (LLM Analyzer) about whether multimodal input is
 actually part of the v1 prompt or explicitly deferred — right now it's
 neither decided nor implemented, just declared.
 
+### Verified: Sprint 2 unit tests pass on both dev machines
+
+`tokenize_selector` and `classify_playwright_error` confirmed working via
+11 unit tests (8 new + 3 from Sprint 0), green both in the sandbox and on
+Marcin's Windows machine. Caught a real bug during test-writing itself:
+the rotation-suffix regex was stripping genuine 4-letter words (`form`,
+`name`) because it matched on length alone — `.chaos-form` lost "form"
+the same way `username-ab12` was meant to lose "ab12". Fixed by requiring
+the suffix to mix letters AND digits (true base36 shape) before treating
+it as rotation noise — pure-letter 4-char tokens now survive. This is
+exactly the kind of bug that looks fine by inspection and only shows up
+once a real word collides with the suffix-length heuristic.
+
+### Known inefficiency, not optimized yet: multiple evaluate() calls per failure
+
+`_collect_selector_context` calls `page.evaluate()` up to 4 times per
+failure: once for light-DOM scoring, once for shadow-DOM scoring, and once
+more per tied top-scoring candidate for landmark lookup. Each round-trip
+has real cost (serialization, IPC to the browser process). Sprint 2
+prioritized correctness of the scoring logic over this — premature to
+optimize before Sprint 3/4 give real numbers on how often ties happen in
+practice and how expensive this actually is end-to-end (ties to Gap #7,
+cost accounting). Worth collapsing into fewer round-trips once there's
+data to justify the refactor, not before.
+
 ---
 
 ## TODO (future sprints)
@@ -682,3 +707,4 @@ neither decided nor implemented, just declared.
 - Sprint 5 (BLOCKING, not optional): implement max_attempts, max_cost_per_test, max_time_per_heal before Autonomous Mode is considered done — no infinite retry loops in CI
 - Sprint 3: decide whether screenshot is actually part of v1 LLM prompt (multimodal) or explicitly deferred — currently declared in HealingContext but has had zero design attention
 - Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4
+- Sprint 3/4: revisit context_collector.py's multiple page.evaluate() round-trips (up to 4 per failure) once real cost/timing data exists — premature to optimize now
