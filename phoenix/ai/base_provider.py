@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
+from phoenix.collector.failure_classifier import FailureType
+
 
 @dataclass
 class HealingContext:
@@ -16,6 +18,7 @@ class HealingContext:
     dom_snapshot: str
     page_url: str
     original_code: str
+    failure_type: FailureType
     screenshot_path: Optional[str] = None
 
 
