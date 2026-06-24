@@ -684,6 +684,31 @@ practice and how expensive this actually is end-to-end (ties to Gap #7,
 cost accounting). Worth collapsing into fewer round-trips once there's
 data to justify the refactor, not before.
 
+## Sprint 3 (pre-coding)
+
+### Decision: separate model for Sprint 3 verification, llava parked for later
+
+`defect-pilot`'s `ai/ollama_provider.py` (httpx-based, `/api/generate`,
+`stream: False`, `is_available()` health check via `/api/tags`) is the
+convention PhoenixQA's `OllamaProvider` follows — confirmed by reading the
+actual file rather than guessing the shape.
+
+`defect-pilot` uses `llava` locally (vision-capable, good at analyzing bug
+screenshots). PhoenixQA also has `llava:latest` pulled already. But `llava`
+is vision-first and built on an older text architecture (Vicuna/Llama2-era)
+— reliable structured JSON output is less certain than with newer
+text-optimized models.
+
+Decision: pull `llama3.2` specifically for Sprint 3 verification, rather
+than debugging prompt/parsing architecture and model JSON-reliability as
+one tangled variable. Same instinct as the CHAOS_LEVELS isolation
+decision earlier — separate the variables, verify one thing at a time.
+`llava` stays installed and gets revisited specifically for Gap #8
+(screenshot / multimodal input) once that's actually being decided, not
+before. `defect-pilot`'s `complete_with_images()` pattern (raw base64 in
+the `images` field, no data URI prefix) is already a usable reference for
+that future work.
+
 ---
 
 ## TODO (future sprints)
