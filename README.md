@@ -153,9 +153,9 @@ Switch via single env variable. No code changes.
 |----------|---------------------------------------------------------------|------------|
 | Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
 | Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
-| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
-| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
-| Sprint 4 | Safe Mode — Human-in-the-loop, ground truth builder           | ⏳ Planned  |
+| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ⏳ Planned  |
+| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ⏳ Planned  |
+| Sprint 4 | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
 | Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation, stop conditions (max attempts/cost/time) | ⏳ Planned  |
 | Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
 | Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
@@ -186,9 +186,13 @@ cp .env.example .env
 npm run dev
 # → http://localhost:5173
 
-# 5. Run tests against it (Healer lands in Sprint 4/5)
+# 5. In a SEPARATE terminal (npm run dev keeps step 4's terminal busy):
 cd ..
-pytest tests/chaos/ -m chaos
+# Run tests against it — Safe Mode is live (Sprint 4)
+# -s is REQUIRED: Safe Mode prompts for accept/reject via input(),
+# and pytest swallows stdin/stdout without -s — the prompt never
+# reaches the terminal and the run just hangs with no explanation.
+pytest tests/chaos/ -m chaos -s
 ```
 
 ---

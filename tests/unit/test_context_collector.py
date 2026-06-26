@@ -64,6 +64,20 @@ class TestClassifyPlaywrightError:
         result = classify_playwright_error(error)
         assert result == FailureType.SELECTOR_NOT_FOUND
 
+    def test_fill_style_timeout_without_visible_suffix_is_selector_not_found(self):
+        # Caught via a real end-to-end run against Chaos App, not in
+        # isolation — fill() actions log "waiting for locator(...)" with
+        # NO "to be visible" suffix, unlike click(). The original
+        # classifier required that suffix unconditionally and silently
+        # misclassified every fill() timeout as UNKNOWN. See LEARNINGS.md.
+        error = PlaywrightTimeout(
+            "Locator.fill: Timeout 30000ms exceeded.\n"
+            "Call log:\n"
+            "  - waiting for locator(\"[data-testid='username']\")"
+        )
+        result = classify_playwright_error(error)
+        assert result == FailureType.SELECTOR_NOT_FOUND
+
     def test_unrecognized_timeout_shape_is_unknown_not_misclassified(self):
         # Sprint 2 deliberately returns UNKNOWN rather than guessing —
         # this test documents and protects that choice.

@@ -61,14 +61,19 @@ def classify_playwright_error(error: Exception, page=None, selector: str = None)
     message = str(error).lower()
 
     # Playwright's timeout message differs depending on WHY waiting for
-    # the locator failed. These substring checks are intentionally
-    # narrow for Sprint 2 — broadening them is exactly the Sprint 6 work,
-    # once DETACHED_FROM_DOM / NOT_VISIBLE have a real Chaos App
-    # mechanism to validate against (see LEARNINGS.md).
-    if "waiting for locator" in message and "to be visible" in message:
+    # the locator failed, AND depending on which action was being
+    # performed. Discovered via a real end-to-end run (see LEARNINGS.md):
+    # click()-style actions log "waiting for locator(...) to be visible",
+    # but fill()-style actions only log "waiting for locator(...)" with
+    # no "to be visible" suffix — fill() waits for editability, not
+    # strictly visibility, so its log wording is narrower. The original
+    # check required "to be visible" unconditionally and silently
+    # misclassified every fill() timeout as UNKNOWN.
+    if "waiting for locator" in message:
         # Playwright found zero matching elements for the full timeout
         # window — this is our case: rotated/mutated selector, nothing
-        # in the DOM ever matched it.
+        # in the DOM ever matched it. True for both click() and fill()
+        # shaped messages.
         return FailureType.SELECTOR_NOT_FOUND
 
     # Anything else Playwright-timeout-shaped that we can't confidently

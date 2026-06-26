@@ -735,6 +735,123 @@ the prompt actually produces usable selector proposals against real
 Chaos App DOM context, not just that the parsing plumbing works on
 hand-crafted sample strings.
 
+## Sprint 4 — Safe Mode implementation
+
+### Built: full Safe Mode pipeline, wired end-to-end
+
+`BasePage.click()/fill()` now actually call `Healer.attempt_heal()` on a
+Playwright timeout (when `healing=True`) instead of raising
+`NotImplementedError` — this is the connection point that's been a stub
+since Sprint 0. Flow confirmed in direct discussion and matches the
+diagram: test fails → `ContextCollector` + LLM analyze → terminal shows
+full context (old selector, error, proposal, confidence, reasoning) →
+human accepts/rejects → on accept, selector is substituted and the
+SAME action is retried in the SAME test step (not a test restart) → on
+reject, the ORIGINAL Playwright error propagates so pytest reports the
+real failure, not a healing-related one → decision logged either way.
+
+New files: `phoenix/healing/safe_mode.py` (terminal review prompt),
+`phoenix/healing/decision_logger.py` (JSON-lines log, NOT SQLite — see
+below), `HealingRejectedError` in `healer.py` (lets `BasePage` distinguish
+"human declined" from "healing crashed").
+
+### Decision: Healer is lazily constructed in BasePage, not built in __init__
+
+`BasePage.__init__` no longer eagerly creates a `Healer`. Most BasePage
+instances in a typical test run never hit a failure path, so constructing
+a provider + collector for every single page object would be wasted setup
+cost. `_get_healer()` builds it on first actual use instead.
+
+### Decision: ground truth logging — JSON Lines file, not SQLite, for Sprint 4
+
+Confirmed in direct discussion: simple append-only log
+(`healing_decisions.log`) now, full `history_store.py` SQLite schema
+deferred to Sprint 6 — building the real schema before Gap #1 (healing
+correctness definition) is resolved would mean guessing at structure
+twice. Each log line captures the FULL decision context (selector, error,
+proposal, confidence, reasoning, accept/reject), not just a pass/fail
+flag — per direct discussion, the log needs to support a human tracing
+back through "what was the diagnosis, was the fix right" after a test run
+finishes, not just a binary outcome.
+
+### IMPORTANT — pytest -s required for Safe Mode to work at all
+
+`safe_mode.py` uses Python's `input()` to block and wait for the human's
+accept/reject decision. Pytest captures stdout/stdin by default during
+test execution — without the `-s` flag (`--capture=no`), the prompt never
+reaches the terminal and the test just hangs with no visible explanation.
+
+```bash
+pytest tests/chaos/ -m chaos -s
+```
+
+This is exactly the kind of gotcha that wastes 20 minutes of confused
+debugging on first run if it isn't written down loudly. Documented here
+AND needs to land in README's Quickstart section once Sprint 4 testing
+is verified end-to-end against real Chaos App + Ollama.
+
+### Verified: 24/24 unit tests pass (3 new for decision_logger)
+
+`decision_logger.py` is the only Sprint 4 piece testable without a live
+browser page or a real Ollama call — pure file I/O, tested with pytest's
+`tmp_path` fixture. `Healer`/`safe_mode.py` need a real Playwright page
+and a real LLM round-trip, so they're exercised via manual end-to-end
+testing against Chaos App, not unit tests. No bugs caught this time
+(unlike Sprint 2's regex bug and Sprint 3's truncated-JSON bug) — the
+logger's logic was simple enough that it passed clean on the first
+write, which is itself worth noting as a contrast to the pattern in
+earlier sprints.
+
+**Not yet done — next concrete step:** an actual end-to-end run against
+the real Chaos App + Ollama + llama3.2, with `pytest -s`, to see the
+terminal review prompt fire on a real rotated selector and confirm the
+full retry-in-place behavior actually works outside of unit-tested
+pieces in isolation.
+
+### First real end-to-end run — caught a bug unit tests couldn't catch
+
+Ran `pytest tests/chaos/ -m chaos -s` against the real Chaos App for the
+first time. Two environment setup issues hit first (both Windows/network
+specific, not project bugs): `playwright install chromium` failed with
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE` (same corporate SSL-inspection pattern
+as the earlier `npm install` issue) — resolved with
+`$env:NODE_TLS_REJECT_UNAUTHORIZED="0"` for that one install command.
+
+With the browser installed, the real bug surfaced: `classify_playwright_error`
+returned `FailureType.UNKNOWN` instead of `SELECTOR_NOT_FOUND`, which sent
+execution into the `NotImplementedError` branch reserved for Sprint 6
+failure types — even though this WAS a Sprint 2 in-scope case.
+
+Root cause: the classifier required both `"waiting for locator"` AND
+`"to be visible"` in the exception message. That pattern matches
+Playwright's `click()` timeout wording, but `fill()` — which is what
+`ChaosLoginPage.login()` actually calls first — logs only
+`"waiting for locator(...)"`, with no `"to be visible"` suffix, because
+`fill()` waits for editability, not strict visibility. Every unit test
+for the classifier (Sprint 2) had been written against click()-shaped
+sample text, so this gap was invisible until a real `fill()` call hit it.
+
+This is the clearest demonstration yet of why "unit tests pass" and "the
+pipeline works end-to-end" are different claims — exactly Gap #1's
+underlying concern (test passing ≠ correctness), just showing up one
+layer earlier than expected, in the classifier rather than in healing
+correctness itself.
+
+Fix: loosened the condition to `"waiting for locator" in message` alone —
+true for both click() and fill() timeout shapes, still narrow enough to
+correctly return `UNKNOWN` for genuinely different message shapes (the
+existing "unrecognized timeout shape" test still passes unchanged). Added
+a dedicated regression test for the fill()-shaped message specifically,
+so this exact gap can't silently reopen. 25/25 unit tests pass after the
+fix.
+
+**Practical lesson for future sprints:** classifier/parser logic written
+against hand-crafted sample strings is necessary but not sufficient —
+real Playwright/Ollama output has shapes we won't think to write samples
+for until we see them. Worth running a real end-to-end pass earlier in
+each future sprint, not just at the very end, to surface this category of
+gap sooner.
+
 ---
 
 ## TODO (future sprints)
