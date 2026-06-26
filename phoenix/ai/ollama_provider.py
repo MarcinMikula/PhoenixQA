@@ -40,6 +40,19 @@ class OllamaProvider(BaseProvider):
         """
         user_prompt = build_user_prompt(context)
 
+        # Caught via a real end-to-end run: calling /api/generate with a
+        # model that isn't pulled returns a bare 404 from Ollama, which
+        # surfaces as a generic httpx.HTTPStatusError with no indication
+        # of WHY. health_check() already knows how to give a clear,
+        # actionable message ("Run: ollama pull X") — running it first
+        # turns a confusing 404 into an honest error before wasting a
+        # round-trip on a request that can't succeed.
+        if not self.health_check():
+            raise RuntimeError(
+                f"Ollama model '{self.model}' is not available. "
+                f"Run: ollama pull {self.model}"
+            )
+
         logger.debug(
             f"[Ollama] Sending healing prompt ({len(user_prompt)} chars) to {self.model}"
         )

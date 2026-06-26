@@ -852,6 +852,71 @@ for until we see them. Worth running a real end-to-end pass earlier in
 each future sprint, not just at the very end, to surface this category of
 gap sooner.
 
+### Second real bug from the same end-to-end run: default model mismatch
+
+With the classifier fixed, the request reached `OllamaProvider.analyze_failure()`
+and Ollama returned `404 Not Found` on `/api/generate`. Confirmed via a
+manual `curl -Method POST` with `"model":"llama3.2"` that the endpoint and
+Ollama itself were fine — the 404 was Ollama's response to being asked
+for a model that isn't pulled, not a routing/connectivity problem.
+
+Root cause: `Settings.ollama_model` defaulted to `"llama3.1"` (carried
+over from before the Sprint 3 model-selection decision), and
+`.env.example` still said `OLLAMA_MODEL=llama3.1` too — but `llama3.1` was
+never pulled; the actual decision (see "Sprint 3 — Decision: separate
+model" above) was `llama3.2`. Anyone whose local `.env` was copied before
+that decision silently asks Ollama for a model that doesn't exist on
+their machine, and gets a bare 404 with no indication of why.
+
+Fix: corrected the default in both `config/settings.py` and
+`.env.example` to `llama3.2`, matching the actual Sprint 3 decision.
+Also added a `health_check()` call at the start of `analyze_failure()` —
+previously `health_check()` existed but nothing ever called it before
+attempting a real request, so this exact failure mode produced a generic
+`httpx.HTTPStatusError` instead of the clear, actionable message
+`health_check()` was already designed to give ("Run: ollama pull X").
+
+**Practical lesson, reinforcing the one above:** two real bugs found in
+one end-to-end run, neither catchable by unit tests, both in the
+"plumbing between components" rather than in any single component's
+internal logic. This is exactly why Sprint 4 budgeted for a live run
+rather than declaring the sprint done on unit tests alone.
+
+### Third iteration: prompt rewrite fixed the actual healing quality problem
+
+Root cause confirmed via temporary diagnostic logging of the full prompt
+sent to Ollama (added and removed in `ollama_provider.py` — not meant to
+stay in the codebase, just a one-time diagnosis tool). The DOM snapshot
+itself was correct and complete — `ContextCollector` was never the
+problem. `llama3.2`, given a working snapshot, still either:
+(a) echoed the broken selector back as its own "fix" with false high
+confidence, or (b) got cut off mid-generation on a verbose `reasoning`
+field, producing unparseable truncated JSON.
+
+Original `SYSTEM_PROMPT` described the task at a conceptual level
+("propose the most likely replacement") without a mechanical procedure.
+Rewrote it as an explicit numbered algorithm: extract the base name from
+the broken selector, scan the HTML's attributes, match base names while
+expecting a DIFFERENT suffix, copy the actual found value verbatim, and
+an explicit rule stating that an identical broken/proposed selector is
+itself an error condition. Added one few-shot example showing the exact
+input→output shape expected. Also shortened the required `reasoning`
+field to "one short sentence" to reduce truncation risk.
+
+Result, confirmed on the next real run: `llama3.2` correctly returned
+`username-gffw` and `username-kqt9` — actual rotated values copied
+verbatim from the provided HTML — with valid, complete JSON and
+reasoning that names the specific attribute found, not a generic
+restatement of the task. Both were manually rejected during this run
+only to test the reject path, not because the proposals were wrong.
+
+**Sprint 4 conclusion:** the full Safe Mode pipeline — failure →
+classify → collect context → LLM analyze → terminal review → log — is
+confirmed working end-to-end against a real browser and a real local
+LLM. Not yet confirmed: the ACCEPT path (selector substitution + retry
+producing an actual green test) — next concrete step before considering
+Sprint 4 fully closed.
+
 ---
 
 ## TODO (future sprints)

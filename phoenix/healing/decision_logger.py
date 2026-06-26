@@ -13,7 +13,9 @@ mechanically parse later when Sprint 6 migrates this into SQLite. Per
 direct discussion: "case z błędem miał fajnie rozbudowany log, aby
 użytkownik po zakończonym teście mógł dobrze prześledzić, ocenić
 diagnozę/naprawę" — every field needed for that post-hoc review is
-captured here, not just accept/reject.
+captured here, including the raw LLM response text (essential for
+diagnosing parse failures — without it, a "JSON parse error" message
+alone gives no way to see WHAT the model actually returned).
 """
 import json
 from datetime import datetime, timezone
@@ -47,6 +49,7 @@ def log_decision(
         "confidence": proposal.confidence,
         "reasoning": proposal.reasoning,
         "alternative_selectors": proposal.alternative_selectors,
+        "raw_response": proposal.raw_response,
         "accepted": accepted,
         "mode": "safe",  # Sprint 5 will log "autonomous" from the other path
     }

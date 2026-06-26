@@ -54,6 +54,18 @@ class TestLogDecision:
         assert entry["mode"] == "safe"
         assert "timestamp" in entry
 
+    def test_includes_raw_response_for_post_hoc_diagnosis(self, tmp_path):
+        # Caught via a real end-to-end run: a parse-failure entry with no
+        # raw_response gives no way to see WHAT the model actually
+        # returned — "JSON parse error" alone isn't enough to diagnose
+        # or fix a prompt. This field is the difference between a log
+        # you can debug from and one you can only shrug at.
+        log_path = tmp_path / "healing_decisions.log"
+        log_decision(_sample_context(), _sample_proposal(), accepted=True, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["raw_response"] == '{"proposed_selector": "..."}'
+
     def test_appends_rather_than_overwrites(self, tmp_path):
         log_path = tmp_path / "healing_decisions.log"
         log_decision(_sample_context(), _sample_proposal(), accepted=True, log_path=str(log_path))
