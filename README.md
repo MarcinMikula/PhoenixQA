@@ -44,7 +44,9 @@ Why phase it: better to prove the full pipeline (collect → analyze → heal
 → validate) end-to-end on one well-understood failure type first, then
 extend to the others with real lessons learned — rather than build four
 shallow strategies at once. The other three are committed scope, not a
-"maybe later" — see `LEARNINGS.md` for the full reasoning.
+"maybe later" — see `LEARNINGS.md` for the full reasoning, or
+[`docs/gaps.md`](docs/gaps.md) for a quick-scan status table of every
+open architectural question.
 
 ---
 

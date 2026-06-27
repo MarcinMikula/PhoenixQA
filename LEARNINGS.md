@@ -3,6 +3,22 @@
 Conventions, decisions, and hard-won lessons from building PhoenixQA.
 Carried across all repos in the ecosystem.
 
+**This file is the project's chronological journal** — problem → analysis
+→ decision → implementation → test → conclusion, sprint by sprint. It's
+intentionally kept this way even as it grows long, because the sequence
+itself is part of the value: it shows the actual thinking process, not
+just a list of outcomes.
+
+**For fast lookup by topic instead of by sprint**, see the thematic
+indexes in `docs/`:
+- [`docs/gaps.md`](docs/gaps.md) — all numbered architectural gaps, status at a glance
+- [`docs/architecture-decisions.md`](docs/architecture-decisions.md) — key decisions, grouped by area
+- [`docs/known-limitations.md`](docs/known-limitations.md) — what's deliberately incomplete or fragile right now
+- [`docs/future-ideas.md`](docs/future-ideas.md) — brainstormed possibilities, deliberately deferred
+
+Each index entry is a short summary + pointer back here — full reasoning
+always lives in this file, never duplicated.
+
 ---
 
 ## Sprint 0
