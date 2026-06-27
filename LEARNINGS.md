@@ -623,6 +623,45 @@ column or a modifier on the existing two ("Heuristic + fingerprint", "LLM
 + fingerprint") — an enhancement to the experiment, not a precondition
 for running it.
 
+### Project philosophy note: HeuristicProvider is a control, not a product feature
+
+Worth stating explicitly, because it changes how the Gap #9 benchmark
+should be talked about and written up, not just how it's built.
+
+`HeuristicProvider` is not "a cheaper alternative healing mode" sitting
+alongside Ollama/Anthropic as a third option for users to pick. It exists
+as an **experimental control** — the same role a placebo or baseline
+plays in any real measurement. Its only job is to answer one question:
+how much of the healing problem can be solved WITHOUT an LLM at all?
+
+This reframes what the benchmark is actually for. Most AI-healing
+projects report a single number: "the LLM healed 94% of failures." That
+number alone says nothing about whether an LLM was the right tool for
+the job — it could be 94% because the problem is genuinely hard and
+needs real reasoning, or it could be 94% because most of these failures
+are trivial string-matching cases that a 20-line regex would have solved
+just as well.
+
+With the control in place, the same result becomes: "a simple
+tokenization + fuzzy-matching heuristic reached 81% on the same failure
+set; the LLM reached 94%. The model's actual contribution was 13
+percentage points." That's a fundamentally different — and more
+credible — claim. It demonstrates the problem was actually
+INVESTIGATED before reaching for an LLM, rather than assuming an LLM was
+necessary because the project is about AI.
+
+This is the difference between an "AI everywhere" project and one that
+answers a real engineering question: where do deterministic heuristics
+stop working, and where does language-model reasoning actually start
+being necessary? The second framing is the one worth defending in an
+interview — it shows judgment about WHEN to reach for an LLM, not just
+the ability to wire one up.
+
+Practical consequence for write-up (Sprint 7/8, README, any future
+presentation of this project): always report the heuristic baseline
+number ALONGSIDE the LLM number, never the LLM number alone. The gap
+between them — not either number in isolation — is the actual finding.
+
 ### Gap #10 — missing stop conditions for Autonomous Mode
 
 Raised in follow-up discussion: nothing in the current design prevents
@@ -1041,7 +1080,7 @@ around.
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
 - Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing
 - Sprint 7 (renamed: "Healing Benchmark Runner" — name now matches what it actually does): iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination. Few-shot self-training stays in scope as a sub-component, not the headline.
-- Sprint 7/8: implement `HeuristicProvider` (phoenix/ai/heuristic_provider.py) — fuzzy/Levenshtein selector matching, zero LLM calls, same BaseProvider interface — REQUIRED so benchmark proves LLM is actually adding value, not just "healing exists"
+- Sprint 7/8: implement `HeuristicProvider` (phoenix/ai/heuristic_provider.py) — fuzzy/Levenshtein selector matching, zero LLM calls, same BaseProvider interface — REQUIRED so benchmark proves LLM is actually adding value, not just "healing exists". Treat as an experimental control, not a third user-facing mode — always report its number alongside the LLM number in any write-up, never the LLM number alone
 - Sprint 5 (BLOCKING, not optional): implement max_attempts, max_cost_per_test, max_time_per_heal before Autonomous Mode is considered done — no infinite retry loops in CI
 - Sprint 3: decide whether screenshot is actually part of v1 LLM prompt (multimodal) or explicitly deferred — currently declared in HealingContext but has had zero design attention
 - Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4
