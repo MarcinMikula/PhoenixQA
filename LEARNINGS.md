@@ -979,6 +979,25 @@ even mean for an assertion that returns a boolean rather than performing
 an action? Worth deciding deliberately in a future sprint rather than
 bolting on `healing=True` to `is_visible()` reactively.
 
+### Verified: infrastructure failures correctly bypass healing entirely
+
+Curiosity-driven experiment (per direct discussion: "z ciekawości sprawdzę
+co się stanie jak wyłączę naszą Chaos App, taka symulacja server error"):
+ran the test suite with Chaos App's dev server stopped. Result: clean,
+fast failure (6.36s) — `Page.goto: net::ERR_CONNECTION_REFUSED`, raised
+directly from `login_page.open()` → `navigate()`, with the Healer never
+invoked at all.
+
+This confirms the healing=True boundary is in the right place: `navigate()`
+never had a healing parameter, because "the server isn't there" and "the
+selector changed" are fundamentally different failure classes — no
+selector-repair logic, however good, can fix a server that isn't running.
+No wasted Ollama round-trip was attempted on a problem an LLM can't solve.
+Good evidence the architecture's scope boundaries (healing=True only on
+click()/fill(), never on navigate()) hold up under a failure mode that
+wasn't explicitly tested for, not just the ones Sprint 2-4 were built
+around.
+
 ---
 
 ## TODO (future sprints)
