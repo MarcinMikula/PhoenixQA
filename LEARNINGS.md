@@ -600,6 +600,29 @@ Status: scoped into Sprint 7/8 (Healing Benchmark Runner), not Sprint 2.
 `HeuristicProvider` needs its own file (`phoenix/ai/heuristic_provider.py`)
 implementing `analyze_failure()` without ever calling an LLM API.
 
+**Clarification (from follow-up discussion): the heuristic does NOT
+depend on historical fingerprinting.** Easy to conflate these — both
+involve "matching a selector to something" — but they anchor on different
+things entirely:
+
+- **Heuristic (Gap #9, usable now)** anchors on the PRESENT: the broken
+  selector's own name (tokenized — same `tokenize_selector()` logic
+  already built in Sprint 2, stripping the rotation suffix) compared
+  against attributes of elements that exist in the CURRENT live DOM via
+  fuzzy/Levenshtein matching. No history required. This is essentially a
+  simplified, LLM-free version of what `context_collector.py`'s weighted
+  scoring already does — same anchor, no model call at the end.
+- **Historical fingerprint (Sprint 6 future consideration, see above)**
+  anchors on the PAST: a snapshot of how the element looked the last time
+  it was known to work, diffed against the current DOM.
+
+Consequence: the Gap #9 benchmark (No Healer / Heuristic / LLM) is fully
+buildable on what already exists from Sprint 0-4 — it does not need to
+wait for Sprint 6. Fingerprinting, if pursued later, would be a fourth
+column or a modifier on the existing two ("Heuristic + fingerprint", "LLM
++ fingerprint") — an enhancement to the experiment, not a precondition
+for running it.
+
 ### Gap #10 — missing stop conditions for Autonomous Mode
 
 Raised in follow-up discussion: nothing in the current design prevents
