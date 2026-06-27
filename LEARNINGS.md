@@ -917,9 +917,72 @@ LLM. Not yet confirmed: the ACCEPT path (selector substitution + retry
 producing an actual green test) — next concrete step before considering
 Sprint 4 fully closed.
 
+### Confirmed: ACCEPT path works — username and password healing succeeded twice
+
+Ran the full suite with `y` on every prompt. `username` and `password`
+fields healed correctly in BOTH tests — proposed selector substituted,
+`fill()` retried, value entered successfully. This is the core Sprint 4
+claim confirmed for real: a test action that failed on a rotated selector
+can be transparently repaired and continue in the same step.
+
+### Bug found and fixed: empty/zero-confidence proposals must auto-reject, not prompt
+
+One `click()` healing attempt hit a truncated-JSON parse failure (same
+known failure mode as before — verbose `reasoning` field, model cut off
+mid-generation). `response_parser.py`'s fallback correctly produced
+`proposed_selector=""`, `confidence=0.0`. But `Healer.attempt_heal()`
+still asked "Accept this fix?" for that empty result. Answering `y` out
+of habit (a real, easy-to-make mistake during fast iteration through many
+prompts) sent `""` straight into `page.locator("")`, producing a CSS
+parse error completely unrelated to the original selector failure —
+confusing if you didn't already know why.
+
+Root cause: there was no early-exit check for "this proposal has nothing
+in it." A confidence of exactly 0.0 combined with an empty selector is
+not a judgment call for a human to weigh — it's the parser's own signal
+that nothing usable came back, and asking for "review" of nothing is
+itself the bug.
+
+Fix: `Healer.attempt_heal()` now checks `if not proposal.proposed_selector
+or proposal.confidence <= 0.0` BEFORE calling `request_human_review()`,
+auto-rejecting with a clear message and logging the decision the same as
+any other rejection — no silent skip, just no pointless prompt. Added
+`tests/unit/test_healer.py` with two tests (mocked provider/collector,
+no live page needed): one confirming the empty case auto-rejects without
+ever reaching `request_human_review()` (proven by the test completing at
+all rather than hanging on `input()`), and one confirming a genuinely
+low-but-nonzero-confidence proposal still correctly reaches the human —
+the fix only catches the specific empty/zero case, not "low confidence"
+in general. 28/28 unit tests pass.
+
+### Scope gap found, not fixed: is_visible()/get_text() never had healing=True at all
+
+`test_invalid_credentials` healed `username`, `password`, AND `btn-login`
+successfully (form submission worked), but the test still failed — its
+final assertion `is_visible(MSG_ERROR)` returned `False`. `MSG_ERROR` is
+a stable selector string in `ChaosLoginPage`, but `is_visible()` and
+`get_text()` in `BasePage` never had a `healing` parameter at all —only
+`click()` and `fill()` do. The error message element rotates its
+data-testid like everything else in Chaos App, so a stable selector
+checking for it will fail just as surely as a stable `fill()` selector
+would — there was simply never a healing path available for read-only
+assertions.
+
+This is a deliberate Sprint 0 scope boundary surfacing for the first
+time, not a new bug — `BasePage`'s healing hooks were designed around
+"actions that DO something" (click, fill), not "assertions that CHECK
+something." Whether read-only assertions should ALSO be healable is a
+real open question: arguably yes (a flaky assertion selector is just as
+real a maintenance cost as a flaky action selector), but it also raises
+a new question Safe Mode hasn't had to answer yet — what does "healing"
+even mean for an assertion that returns a boolean rather than performing
+an action? Worth deciding deliberately in a future sprint rather than
+bolting on `healing=True` to `is_visible()` reactively.
+
 ---
 
 ## TODO (future sprints)
+- Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
 - Sprint 1: dom_mutation.py gets most internal variants (wrap/retag/nest/reorder) — highest realism mechanism

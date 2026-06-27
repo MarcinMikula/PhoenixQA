@@ -24,6 +24,17 @@ def request_human_review(context: HealingContext, proposal: HealingProposal) -> 
     Deliberately verbose — see module docstring. A confidence number
     alone isn't enough to make an informed decision; the human needs to
     see the actual selector change and the model's stated reasoning.
+
+    Caught via a real end-to-end run: a proposal with an EMPTY
+    proposed_selector (the response_parser fallback for an unparseable
+    LLM response — see response_parser.py) was accidentally accept-able
+    by typing 'y'. The human did accept it, expecting "the LLM's fix,
+    whatever it was" — but there was no fix, just a parse failure
+    surfaced as a zero-confidence placeholder. The empty string then hit
+    Playwright as `page.locator("").click()`, raising a confusing
+    "Unexpected token" CSS parsing error instead of a clear message about
+    what actually went wrong. There's nothing to accept here — this is
+    not a human decision, it's a hard stop.
     """
     print("\n" + "=" * 70)
     print("🔥 PhoenixQA — Healing proposal requires review")
@@ -38,6 +49,14 @@ def request_human_review(context: HealingContext, proposal: HealingProposal) -> 
     if proposal.alternative_selectors:
         print(f"Alternatives:      {', '.join(proposal.alternative_selectors)}")
     print("=" * 70)
+
+    if not proposal.proposed_selector:
+        print(
+            "⚠️  No usable selector was proposed (LLM response could not be "
+            "parsed). Nothing to accept — auto-rejecting. The original "
+            "test failure will be reported."
+        )
+        return False
 
     while True:
         answer = input("Accept this fix and retry the action? [y/n]: ").strip().lower()

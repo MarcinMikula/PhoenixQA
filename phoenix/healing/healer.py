@@ -67,6 +67,24 @@ class Healer:
                 "see LEARNINGS.md Gap #10. Set HEALING_MODE=safe for now."
             )
 
+        if not proposal.proposed_selector or proposal.confidence <= 0.0:
+            # Caught via a real end-to-end run: a parse failure (e.g.
+            # truncated JSON) produces a fallback proposal with an empty
+            # selector and zero confidence — see response_parser.py's
+            # _fallback_proposal(). Asking a human "accept this fix?" for
+            # an empty string isn't a real decision; answering "y" by
+            # habit led straight into Locator(""), a CSS parse error
+            # that has nothing to do with the original failure. This
+            # case is auto-rejected before the human is even asked —
+            # there's nothing to review.
+            log_decision(context, proposal, accepted=False)
+            raise HealingRejectedError(
+                f"Healing proposal was empty or zero-confidence for broken "
+                f"selector '{broken_selector}' — likely a malformed LLM "
+                f"response (see decision log for raw_response). Auto-rejected "
+                f"without prompting, nothing to review."
+            )
+
         accepted = request_human_review(context, proposal)
         log_decision(context, proposal, accepted)
 
