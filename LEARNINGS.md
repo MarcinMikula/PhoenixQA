@@ -1274,6 +1274,42 @@ needed for any of these; that verification is the next step, against
 real Chaos App + Ollama, same as Sprint 4's eventual live run uncovered
 real bugs unit tests alone couldn't.
 
+### Verified live: Autonomous Mode runs end-to-end with zero terminal prompts
+
+First real run with `HEALING_MODE=autonomous` against Chaos App + Ollama
+(llama3.2). Initial confusion: the run still showed Safe Mode's terminal
+prompts and `"mode": "safe"` in the decision log — turned out `.env`
+still had `HEALING_MODE=safe`, an easy miss since `.env.example` had
+been updated earlier but `.env` itself is gitignored and never
+auto-updated by any file swap. Same category of gotcha as the earlier
+`OLLAMA_MODEL` default mismatch — worth remembering as a pattern: when
+something "should have changed" but didn't, check `.env` itself before
+suspecting the code.
+
+With `.env` corrected, the real run confirmed the full design:
+- **Zero terminal prompts** for the entire run — confirms
+  `_attempt_heal_autonomous()` actually executes, not just the mocked
+  unit-test path.
+- **High-confidence proposals (0.85-0.95) auto-accepted**: `username`,
+  `password`, and `btn-login` all healed and retried successfully with
+  no human involved, in a separate run.
+- **Zero-confidence proposal auto-rejected, no hang**: a `password` heal
+  hit the same known truncated-JSON failure mode as Sprint 4 (verbose
+  `reasoning` field, model cut off mid-generation). Parser correctly
+  returned `confidence=0.0`; `Healer` correctly rejected it against the
+  `0.75` policy threshold with a clear message — `"Autonomous policy
+  rejected proposed fix '' ... confidence 0.00 below policy threshold
+  0.75"` — and the run continued, never blocking on `input()`.
+- **`is_visible(MSG_WELCOME)` assertion still fails** — same known,
+  already-documented scope boundary (`is_visible()`/`get_text()` have no
+  `healing` parameter), not a new bug. Confirms this boundary holds the
+  same way under Autonomous Mode as it did under Safe Mode in Sprint 4.
+
+Sprint 5 is now verified both in isolation (41 unit tests) and live
+end-to-end — the core claim ("Autonomous Mode makes its own
+accept/reject decision with no human involved, respecting a confidence
+policy") is demonstrated working, not just designed.
+
 ---
 
 ## TODO (future sprints)
@@ -1299,4 +1335,4 @@ real bugs unit tests alone couldn't.
 - Sprint 3: decide whether screenshot is actually part of v1 LLM prompt (multimodal) or explicitly deferred — currently declared in HealingContext but has had zero design attention
 - Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4
 - Sprint 3/4: revisit context_collector.py's multiple page.evaluate() round-trips (up to 4 per failure) once real cost/timing data exists — premature to optimize now
-- Sprint 5: verify Autonomous Mode against real Chaos App + Ollama with HEALING_MODE=autonomous — confirm min_confidence=0.75 correctly auto-accepts good proposals (like the 0.95 ones seen in Sprint 4) and auto-rejects bad ones, with zero terminal prompts either way
+- Sprint 5: DONE — verified Autonomous Mode against real Chaos App + Ollama with HEALING_MODE=autonomous. Confirmed min_confidence=0.75 auto-accepts good proposals (0.85-0.95) and auto-rejects bad ones (0.0, truncated JSON), zero terminal prompts either way
