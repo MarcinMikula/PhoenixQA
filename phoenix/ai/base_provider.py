@@ -32,10 +32,37 @@ class HealingProposal:
     raw_response: str = ""
 
 
+@dataclass
+class ProviderResult:
+    """
+    Neutral metadata about a single analyze_failure() call — tokens and
+    elapsed time only, NEVER a dollar cost (see LEARNINGS.md "Sprint 5 —
+    Decision: budget in tokens/time, never in currency"). Model pricing
+    changes over time; token counts don't. HealingBudget (Sprint 5)
+    consumes these to enforce limits; converting to a price, if ever
+    wanted, is the caller's job, not this codebase's.
+
+    input_tokens/output_tokens are Optional because not every provider
+    reports both reliably (e.g. Ollama's /api/generate gives eval_count
+    for output but prompt_eval_count for input — both present in
+    practice, but the field stays optional so a provider that genuinely
+    can't report one doesn't have to fake a number).
+    """
+    proposal: HealingProposal
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    elapsed_ms: Optional[int] = None
+
+
 class BaseProvider(ABC):
     @abstractmethod
-    def analyze_failure(self, context: HealingContext) -> HealingProposal:
-        """Given failure context, propose a healed selector."""
+    def analyze_failure(self, context: HealingContext) -> ProviderResult:
+        """
+        Given failure context, propose a healed selector. Returns a
+        ProviderResult wrapping the HealingProposal alongside neutral
+        token/timing metadata — NOT just the proposal alone, since
+        Sprint 5's HealingBudget needs that metadata to enforce limits.
+        """
         pass
 
     @abstractmethod

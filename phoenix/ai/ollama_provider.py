@@ -13,10 +13,11 @@ deliberately set aside for this sprint rather than fighting two unknowns
 (prompt architecture + model JSON-reliability) at once.
 """
 import logging
+import time
 
 import httpx
 
-from phoenix.ai.base_provider import BaseProvider, HealingContext, HealingProposal
+from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
 from phoenix.ai.prompt_templates import SYSTEM_PROMPT, build_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
 from config.settings import Settings
@@ -30,13 +31,19 @@ class OllamaProvider(BaseProvider):
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.model = settings.ollama_model
 
-    def analyze_failure(self, context: HealingContext) -> HealingProposal:
+    def analyze_failure(self, context: HealingContext) -> ProviderResult:
         """
         Sprint 3 scope: only called for FailureType.SELECTOR_NOT_FOUND —
         ContextCollector (Sprint 2) doesn't produce a HealingContext for
         any other failure type yet, so this never has to branch on
         failure_type itself. That branching point lives in Healer
         (Sprint 4/5) once other failure types have real prompts to use.
+
+        Sprint 5: returns ProviderResult, not a bare HealingProposal —
+        HealingBudget needs the token/timing metadata to enforce limits.
+        elapsed_ms measures the full HTTP round-trip, not just the
+        model's own reported timing, since that's what actually counts
+        against a wall-clock budget.
         """
         user_prompt = build_user_prompt(context)
 
@@ -64,18 +71,34 @@ class OllamaProvider(BaseProvider):
             "stream": False,
         }
 
+        start = time.monotonic()
         response = httpx.post(
             f"{self.base_url}/api/generate",
             json=payload,
             timeout=120.0,
         )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
         response.raise_for_status()
         data = response.json()
         raw_content = data.get("response", "")
 
-        logger.debug(f"[Ollama] Response received ({len(raw_content)} chars)")
+        logger.debug(
+            f"[Ollama] Response received ({len(raw_content)} chars) in {elapsed_ms}ms"
+        )
 
-        return parse_healing_response(raw_content)
+        proposal = parse_healing_response(raw_content)
+
+        # Ollama's /api/generate reports prompt_eval_count (input) and
+        # eval_count (output) when available — not guaranteed on every
+        # response shape, hence .get() with no default rather than
+        # assuming the keys exist.
+        return ProviderResult(
+            proposal=proposal,
+            input_tokens=data.get("prompt_eval_count"),
+            output_tokens=data.get("eval_count"),
+            elapsed_ms=elapsed_ms,
+        )
 
     def health_check(self) -> bool:
         """

@@ -1234,6 +1234,46 @@ that's already spread through a codebase.
 ✘ business/correctness validation — deliberately NOT in scope; remains
   the test's responsibility, as it already is today
 
+### Implementation: Sprint 5 code written, 41/41 unit tests pass
+
+Built exactly to the design above, with one necessary refactor discovered
+along the way: `BaseProvider.analyze_failure()` had to change its return
+type from a bare `HealingProposal` to a new `ProviderResult` wrapper
+(`proposal` + `input_tokens`/`output_tokens`/`elapsed_ms`) — `HealingBudget`
+needs that token/timing metadata to enforce limits, and the proposal alone
+never carried it. This touched `OllamaProvider` (now measures the full
+HTTP round-trip via `time.monotonic()` and reads Ollama's own
+`prompt_eval_count`/`eval_count` fields), the `AnthropicProvider` stub
+signature, and every existing test/mock that constructed a bare
+`HealingProposal` from a provider. Chose to update everything now rather
+than maintain two competing return-type conventions — better to absorb
+this while the codebase is still small.
+
+New files: `phoenix/healing/autonomous_policy.py` (`AutonomousPolicy` for
+configured limits, `HealingBudget` for running consumption, separated
+per the policy/tracking split discussed above; `HealLifecycleTimer` as a
+context manager wrapping the full collect+analyze+apply+retry span).
+`Healer` gained `_attempt_heal_safe()` / `_attempt_heal_autonomous()` as
+two explicit branches sharing the same collect→analyze pipeline, plus the
+three new/updated exception types (`HealingLimitExceededError`,
+`HealingFailedError`, alongside the existing `HealingRejectedError`).
+
+`AutonomousPolicy` is configurable via `.env` (`AUTONOMOUS_MIN_CONFIDENCE`,
+`AUTONOMOUS_MAX_ATTEMPTS_TOTAL`, etc.) so the policy isn't only
+constructible from Python — `Healer.__init__` builds a default policy
+from `Settings` when none is passed explicitly.
+
+Unit tests (`tests/unit/test_autonomous_policy.py`,
+`tests/unit/test_healer.py`) cover: budget consumption and the
+total-vs-per-selector distinction, token limits tripping independently
+of attempt count, the budget-exceeded check blocking a provider call
+before it happens (confirmed via `assert_not_called()`), a provider
+exception still consuming budget, and confidence-threshold rejection
+with no human prompt involved. All mocked — no live page or LLM call
+needed for any of these; that verification is the next step, against
+real Chaos App + Ollama, same as Sprint 4's eventual live run uncovered
+real bugs unit tests alone couldn't.
+
 ---
 
 ## TODO (future sprints)
@@ -1255,7 +1295,8 @@ that's already spread through a codebase.
 - Sprint 6: revisit "baseline snapshot on green tests" brainstorm — extend history_store.py, not a new component; needs retention strategy before implementing
 - Sprint 7 (renamed: "Healing Benchmark Runner" — name now matches what it actually does): iterate CHAOS_LEVELS × shadow_dom flag (two dimensions), call get_mechanisms_for_level(), run suite, log pass rate per combination. Few-shot self-training stays in scope as a sub-component, not the headline.
 - Sprint 7/8: implement `HeuristicProvider` (phoenix/ai/heuristic_provider.py) — fuzzy/Levenshtein selector matching, zero LLM calls, same BaseProvider interface — REQUIRED so benchmark proves LLM is actually adding value, not just "healing exists". Treat as an experimental control, not a third user-facing mode — always report its number alongside the LLM number in any write-up, never the LLM number alone
-- Sprint 5 (BLOCKING, not optional): implement max_attempts, max_cost_per_test, max_time_per_heal before Autonomous Mode is considered done — no infinite retry loops in CI
+- Sprint 5: DONE — implemented max_attempts_total, token budget (input/output, not dollar cost), max_time_per_heal_ms via AutonomousPolicy/HealingBudget — no infinite retry loops in CI
 - Sprint 3: decide whether screenshot is actually part of v1 LLM prompt (multimodal) or explicitly deferred — currently declared in HealingContext but has had zero design attention
 - Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4
 - Sprint 3/4: revisit context_collector.py's multiple page.evaluate() round-trips (up to 4 per failure) once real cost/timing data exists — premature to optimize now
+- Sprint 5: verify Autonomous Mode against real Chaos App + Ollama with HEALING_MODE=autonomous — confirm min_confidence=0.75 correctly auto-accepts good proposals (like the 0.95 ones seen in Sprint 4) and auto-rejects bad ones, with zero terminal prompts either way
