@@ -59,6 +59,36 @@ this file is a map, not a copy.
   product feature.** Its purpose is to prove the LLM adds value over
   cheap fuzzy matching — see Gap #9 in `docs/gaps.md`.
 
+## Autonomous Mode (Sprint 5)
+
+- **`max_attempts` is total-per-session, with per-selector tracking as a
+  diagnostic side-channel, not the actual limit.** Per-selector-only
+  limits could legally allow N selectors × M attempts each in one run —
+  not what a single attempts budget is meant to mean.
+- **Budget is measured in tokens/time, never currency.** Providers report
+  neutral `ProviderResult` facts (input/output tokens, elapsed_ms); a
+  separate `HealingBudget` enforces limits. Dollar conversion is
+  explicitly NOT this codebase's job — model pricing changes over time,
+  token counts don't.
+- **`max_time_per_heal` wraps the full collect+analyze+apply+retry
+  lifecycle**, not just the LLM call — CI cares about total time spent,
+  not just inference time.
+- **Three distinct exception types**, not one: `HealingRejectedError`
+  (bad proposal), `HealingLimitExceededError` (budget exhausted, new),
+  `HealingFailedError` (provider/API crashed, new). Each tells a
+  different story in a CI failure report.
+- **Confidence threshold lives in a configurable `AutonomousPolicy`**,
+  not a hardcoded constant — cleanly separates Safe Mode (confidence is
+  informational) from Autonomous Mode (confidence is a hard gate).
+- **Business/correctness validation is deliberately OUT of Healer's
+  scope** (Gap #11). Three options weighed (callback param on every
+  action / leave entirely to test assertions / technical-only validation
+  in Healer); resolved as a layered responsibility model — Playwright
+  performs the action, PhoenixQA recovers the ability to perform it,
+  the test judges correctness. Avoids `Healer` absorbing test-framework
+  responsibilities and an API that accumulates
+  `validate=..., policy=..., hooks=...` params per call.
+
 ## Healing orchestration (Safe Mode)
 
 - **`Healer` is lazily constructed in `BasePage`**, not built in

@@ -1076,6 +1076,164 @@ click()/fill(), never on navigate()) hold up under a failure mode that
 wasn't explicitly tested for, not just the ones Sprint 2-4 were built
 around.
 
+## Sprint 5 (pre-coding) — Autonomous Mode design
+
+Before writing any code, a detailed design discussion resolved five
+open questions from Gap #10 and surfaced one genuinely new gap (#11).
+
+### Decision: max_attempts is total-per-session, with per-selector tracking
+
+Considered `max_attempts_per_selector` alone — rejected. A login flow
+with 4 fields, each healing independently with its own counter of 3,
+could legally execute 4×3=12 healing attempts in a single test run,
+which is not what "max 3 attempts" was meant to mean from a budget
+perspective. What actually matters business-wise is: how many times do
+I let AI intervene in THIS ONE RUN.
+
+Resolved with two-tier tracking:
+```python
+HealingSession:
+    attempts_total       # hard cap across the whole session
+
+HealingAttempt:
+    selector
+    attempt_number_for_selector   # tracked per-selector too, for diagnostics
+```
+`max_attempts_total` (e.g. 5) is the actual stop condition. Per-selector
+attempt numbers are still recorded — useful diagnostic signal ("this one
+selector is unusually problematic") for Sprint 6 history, but not itself
+a limit.
+
+### Decision: budget in tokens/time, never in currency
+
+Strong position, fully adopted: never hardcode a dollar cost. Model
+pricing changes (cited example: Anthropic's per-token price changing
+year over year) — code that encodes "$15/1M tokens" becomes wrong
+silently when pricing changes, while "8000 input tokens" is a fact that
+never goes stale. The provider's only job is to report neutral facts:
+```python
+ProviderResult:
+    input_tokens
+    output_tokens
+    elapsed_ms
+```
+A separate `HealingBudget` (tokens_used, time_used, attempts_used)
+consumes these reports and enforces limits. Users who want a dollar
+figure can compute it themselves from token counts at whatever the
+current price happens to be — that conversion does not belong in this
+codebase.
+
+### Decision: max_time_per_heal wraps the full lifecycle, not just the LLM call
+
+CI doesn't care that the LLM responded in 2s if retry logic then took
+90s — the number that matters is the full `collect() + analyze() +
+apply() + retry()` lifecycle, measured as one wall-clock span. Timing
+only the LLM call would under-report the actual cost of a healing
+attempt to anyone reading a CI report.
+
+### Decision: three distinct exception types, not one
+
+Originally only `HealingRejectedError` existed (Sprint 4, for human
+rejection). Confirmed these are three genuinely different failure
+classes, not variations of one:
+
+- `HealingRejectedError` — the LLM responded, but the fix was bad /
+  declined (existing, Sprint 4)
+- `HealingLimitExceededError` — the system stopped healing because a
+  budget (attempts/tokens/time) was exhausted, NEW for Sprint 5
+- `HealingFailedError` — the LLM/API call itself raised an exception
+  (network error, malformed request, etc.), NEW for Sprint 5
+
+Rationale: a CI report reading "FAILED: limit exceeded" tells a very
+different story than "FAILED: bad proposal" or "FAILED: provider
+crashed" — collapsing them into one exception type would make failure
+reports far less actionable.
+
+### Decision: confidence threshold is a configurable policy, not a hardcoded constant
+
+Rejected hardcoding `confidence >= 0.75` directly in `Healer`. Instead:
+```python
+AutonomousPolicy:
+    min_confidence
+    max_attempts
+    max_tokens
+    max_time
+```
+This cleanly separates Safe Mode (confidence is informational, the
+human decides) from Autonomous Mode (confidence is a hard gate, the
+system decides) — both modes share the same underlying
+collect→analyze pipeline, differing only in policy.
+
+### Gap #11 (NEW) — confidence ≠ correctness
+
+The single most important point raised in this discussion, and a
+genuinely new gap, not a restatement of Gap #1 or #3.
+
+An LLM can report `confidence: 0.99` while pointing at the WRONG
+element. The model being confident does not make it correct. Concrete
+failure scenario: a `username` field heal picks the wrong input
+(perhaps a search box with a similarly-rotated `data-testid`), `fill()`
+succeeds at the Playwright level with zero exceptions, but the
+subsequent login attempt fails for reasons that look like a completely
+unrelated bug 20 actions later. The healing was technically
+"successful" and substantively wrong.
+
+### Resolved: where does correctness validation belong? (Option A vs B vs C)
+
+Three options were weighed for where to catch this:
+
+**Option A — pass a `validate_success` callback into `click()`/`fill()`.**
+Rejected. This makes `Healer` aware of business logic — "did the login
+succeed," "is the basket total correct" — which is a different
+responsibility than "recover the ability to perform this action."
+Within a year this style of API tends to accumulate
+`validate=..., policy=..., hooks=..., telemetry=...` parameters on every
+single action call, and `Healer` quietly becomes a second testing
+framework living inside a self-healing framework. A clear SRP violation.
+
+**Option B — Healer does its job, business correctness stays entirely
+in the test's own assertions** (the status quo, unchanged). Drawback:
+when a wrong-but-technically-successful heal happens, the eventual
+`AssertionError` can land many steps later, far from the actual
+`click()`/`fill()` that was the real problem — a real diagnosis cost.
+
+**Option C — Healer validates only TECHNICAL success criteria,
+Playwright-equivalent in spirit**: did the exception clear, did the
+retried action execute without raising, does the locator still resolve,
+is the page still open. Explicitly NOT business criteria like "was the
+right button clicked" or "did the order get saved." Direct analogy:
+Playwright's own `click()` never checks "was the order saved" either —
+only "did the click happen."
+
+**Decision: Option B, with Option C's technical-criteria framing
+applied to whatever IS checked.** Reasoning, stated as a layered
+responsibility model:
+- Playwright is responsible for performing the action.
+- PhoenixQA is responsible for recovering the ABILITY to perform that
+  action after a failure.
+- The test is responsible for judging whether the application's
+  behavior was correct.
+
+This keeps PhoenixQA a self-healing framework, not a framework that
+gradually absorbs test-framework responsibilities. If deeper validation
+hooks turn out to be genuinely needed once Sprint 6-8 produce real usage
+patterns, the right move is a generic, opt-in policy/hook mechanism
+(`AutonomousPolicy(validator=...)` or `HealingHooks(after_retry=...)`)
+layered onto the whole Autonomous Mode configuration — NOT a parameter
+bolted onto every single `click()`/`fill()` call. Easier to add an
+extensible mechanism later than to walk back a callback-per-action API
+that's already spread through a codebase.
+
+### Sprint 5 scope, finalized
+
+✔ heal (existing pipeline from Sprint 2-4)
+✔ retry (existing, from BasePage)
+✔ stop conditions (`HealingBudget`, `max_attempts_total`/tokens/time)
+✔ confidence gate (`AutonomousPolicy.min_confidence`)
+✔ three distinct exception types
+✘ business/correctness validation — deliberately NOT in scope; remains
+  the test's responsibility, as it already is today
+
 ---
 
 ## TODO (future sprints)

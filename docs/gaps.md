@@ -19,7 +19,8 @@ Gaps are numbered in the order they were raised, not by severity or sprint.
 | 7 | No cost accounting (tokens, storage, runtime) | 🔴 Open | No token budgets, snapshot size limits, retention policy, or runtime budget defined yet — deliberately deferred until real numbers exist |
 | 8 | Screenshot under-weighted vs DOM snapshot | 🔴 Open | `screenshot_path` field exists but has had zero design attention; undecided whether it's part of the v1 prompt at all |
 | 9 | Missing baseline comparison (no-healer / heuristic / LLM) | 🟡 Resolved architecturally, not yet built | `HeuristicProvider` planned as an **experimental control** (not a product feature) for Sprint 7/8, to prove the LLM is actually adding value over cheap fuzzy matching. Does NOT depend on historical fingerprinting — anchors on the present DOM, not the past |
-| 10 | Missing stop conditions for Autonomous Mode | 🔴 Open, BLOCKING Sprint 5 | No `max_attempts` / `max_cost_per_test` / `max_time_per_heal` yet — required before Autonomous Mode can be considered shippable, not optional hardening |
+| 10 | Missing stop conditions for Autonomous Mode | 🟡 Resolved architecturally, Sprint 5 in progress | `HealingBudget`/`AutonomousPolicy` designed (total attempts, tokens, time, confidence threshold) — required before Autonomous Mode can be considered shippable |
+| 11 | Confidence ≠ correctness | 🟡 Resolved architecturally (deliberately NOT fully closed) | An LLM can be 100% confident and still point at the wrong element. Resolved by keeping business/correctness validation OUT of Healer entirely — stays the test's responsibility (Option B), with Healer only checking technical retry success (Option C framing). Deeper validation hooks deferred until real usage justifies them |
 
 ## Status legend
 - 🔴 Open — named, not yet addressed at all
