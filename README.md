@@ -16,10 +16,10 @@ Frontend tests break constantly — not because the feature is broken, but becau
 A class was renamed. A `data-testid` rotated. A wrapper `<div>` appeared around a button after a refactor. A component moved into a Shadow DOM boundary.
 
 **PhoenixQA** intercepts those failures, feeds the context to an LLM, and either:
-- proposes a fix for human review (**Safe Mode**)
-- applies the fix automatically and continues (**Autonomous Mode**)
+- proposes a fix for human review (**Safe Mode** — live)
+- applies the fix automatically within a confidence/budget policy and continues (**Autonomous Mode** — in progress)
 
-Every decision is logged. Every logged decision improves future healing (**Self-Training Loop**).
+Every Safe Mode decision is logged today. Once Healing History (Sprint 7) lands, that log becomes the basis for a self-training loop that improves future healing (Sprint 8) — not yet built, but the logging that feeds it already is.
 
 ### Scope: where this starts, and where it's going
 
@@ -56,20 +56,26 @@ open architectural question.
 Test Failure
     │
     ▼
-Context Collector        ← DOM snapshot, screenshot, console logs, network
+Context Collector        ← DOM snapshot, weighted semantic scoring, shadow DOM piercing
     │
     ▼
-LLM Analyzer             ← Ollama (local) or Anthropic API
+LLM Analyzer             ← Ollama (local) or Anthropic API → structured JSON proposal
     │
-    ├──► Safe Mode        ← Human reviews, accepts/rejects → Ground Truth
+    ├──► Safe Mode        ← Human reviews full context, accepts/rejects → Ground Truth
     │
-    └──► Autonomous Mode  ← Auto-applies fix, re-runs test
+    └──► Autonomous Mode  ← Confidence gate + budget check, auto-applies fix, retries
               │
               ▼
-        Healing History   ← SQLite log of all decisions
+        Healing History   ← SQLite log of all decisions (Sprint 7)
               │
               ▼
-        Self-Training     ← Few-shot context for better future repairs
+        Self-Training     ← Few-shot context for better future repairs (Sprint 8)
+
+Note: PhoenixQA recovers the ABILITY to perform an action after a
+failure — it does not judge whether the resulting behavior was
+business-correct (e.g. "did login actually succeed"). That judgment
+stays with the test's own assertions, same as it always has. See
+docs/gaps.md Gap #11 for why this boundary is deliberate.
 ```
 
 ---
@@ -115,23 +121,29 @@ End goal (Sprint 8 — Healing Benchmark Runner): run the full suite at every le
 
 The middle column is the actual experiment — a simple fuzzy/Levenshtein selector matcher (zero LLM calls, same provider interface as Anthropic/Ollama) might already solve a surprising fraction of cases. Without this baseline, "90% healed" doesn't prove the LLM was necessary.
 
-**Autonomous Mode has hard stop conditions from day one** (`max_attempts`, `max_cost_per_test`, `max_time_per_heal`) — no infinite LLM retry loops in CI, by design, not as a later hardening pass.
-
-
+**Autonomous Mode has hard stop conditions from day one** (`max_attempts_total`, token budget, `max_time_per_heal`) — no infinite LLM retry loops in CI, by design, not as a later hardening pass. Budget is tracked in tokens and elapsed time, never in currency — model pricing changes over time, token counts don't. See `docs/architecture-decisions.md` for the full reasoning.
 
 ```
 PhoenixQA/
-├── chaos_app/              # React/Vite — intentionally unstable test target
+├── LEARNINGS.md             # chronological journal — problem → analysis → decision → test → conclusion
+├── docs/                    # thematic indexes (fast lookup by topic, not by sprint)
+│   ├── gaps.md              # all numbered architectural gaps, status at a glance
+│   ├── architecture-decisions.md
+│   ├── known-limitations.md
+│   └── future-ideas.md
+├── chaos_app/                # React/Vite — intentionally unstable test target
+│   └── src/chaos/            # selectorRotation, domMutation, asyncDelay, shadowDom
 ├── phoenix/
-│   ├── collector/          # Context gathering on failure
-│   ├── healing/            # Safe Mode + Autonomous Mode orchestration
-│   ├── ai/                 # LLM provider abstraction (Ollama / Anthropic)
-│   ├── training/           # Healing history + self-training loop
-│   └── reporting/          # Allure Phoenix Healing Report
-├── pages/                  # Page Objects for Chaos App (POM pattern)
+│   ├── collector/            # failure_classifier, context_collector (weighted semantic scoring)
+│   ├── healing/              # healer, safe_mode, decision_logger, autonomous_mode
+│   ├── ai/                   # base_provider, ollama_provider, anthropic_provider,
+│   │                         # prompt_templates, response_parser, provider_factory
+│   ├── training/             # Healing history (Sprint 7)
+│   └── reporting/            # Allure Phoenix Healing Report (Sprint 9)
+├── pages/                    # Page Objects for Chaos App (POM pattern)
 ├── tests/
-│   ├── chaos/              # Tests running against Chaos App
-│   ├── unit/
+│   ├── chaos/                # tests running against Chaos App
+│   ├── unit/                 # tokenizer, classifier, parser, logger, healer tests
 │   └── integration/
 └── config/
 ```
@@ -155,10 +167,10 @@ Switch via single env variable. No code changes.
 |----------|---------------------------------------------------------------|------------|
 | Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
 | Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
-| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ⏳ Planned  |
-| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ⏳ Planned  |
+| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
+| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
 | Sprint 4 | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
-| Sprint 5 | Autonomous Mode — auto-apply, pytest re-run loop, post-heal business validation, stop conditions (max attempts/cost/time) | ⏳ Planned  |
+| Sprint 5 | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ⏳ In progress |
 | Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
 | Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8 | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
