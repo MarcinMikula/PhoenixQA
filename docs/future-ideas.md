@@ -73,6 +73,36 @@ PhoenixQA decides to send screenshots to a vision-capable model
 alone doesn't explain the problem (e.g. an element rendering off-screen
 or visually obscured despite being "visible" in the DOM sense).
 
+## Richer decision log fields
+
+Small bucket (safe anytime): `provider`, `elapsed_ms`, `input_tokens`,
+`output_tokens`, `attempt` — all already computed in memory (`ProviderResult`,
+`HealingBudget`) when `log_decision()` is called, just not currently
+passed through to the log. Pure wiring, no new logic.
+
+Larger bucket (deliberately deferred): replacing the bare `accepted: bool`
+field with a richer `decision` enum (`AUTO_APPLIED`/`AUTO_REJECTED`/
+`HUMAN_APPROVED`/`HUMAN_REJECTED`) — today `accepted: false` conflates
+three different stories into one boolean. Worth designing once,
+deliberately, alongside Sprint 6/7's `history_store.py` schema.
+
+**Revisit:** small bucket — anytime, low risk. Larger bucket — Sprint 6/7,
+alongside Gap #1 (healing correctness) resolution.
+
+## Allure Healing Dashboard (replaces the "pile of screenshots" demo plan)
+
+One dashboard — success rate, healing timeline, confidence distribution,
+top repaired selectors, failure reasons, budget usage, provider
+comparison — communicates more than scattered terminal screenshots.
+Directly depends on the richer log fields above (budget usage and
+provider comparison widgets need `elapsed_ms`/tokens/`provider` to render
+real data, not placeholders).
+
+**Revisit:** Sprint 9 (reporting), after Sprint 6/7/8 (history + benchmark
+runner) produce real data for it to visualize. Sequencing matters here —
+building the dashboard before the data pipeline exists means it ships
+with fake numbers.
+
 ## Where to read more
 Search `LEARNINGS.md` for "Future consideration" or the bolded idea name
 above for the full brainstorm, rejected alternatives, and any code

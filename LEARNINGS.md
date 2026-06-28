@@ -1343,6 +1343,68 @@ unit tests protect this: one confirming `mode="autonomous"` is correctly
 recorded, one confirming the default still produces `"safe"` when not
 specified. 43/43 unit tests pass.
 
+### Verified: mode fix confirmed live, all 5 entries correctly labeled
+
+Re-ran the same Autonomous Mode scenario after the fix. All 5 log
+entries now correctly show `"mode": "autonomous"`, including the
+zero-confidence auto-rejection case — confirming the fix works in the
+real code path, not just in mocked unit tests.
+
+### Future consideration: richer decision log fields (most already exist in memory, just not wired to the log yet)
+
+Raised in follow-up discussion: `healing_decisions.log` could carry more
+diagnostic fields per entry — `provider`, `decision` (richer than a bare
+`accepted: bool`), `elapsed_ms`, `input_tokens`, `output_tokens`,
+`attempt`. Worth splitting into two buckets, since they have very
+different cost/risk:
+
+**Small, safe to add anytime — pure wiring, no new logic:**
+- `provider` — `self.settings.ai_provider` is already available in
+  `Healer`, just never passed to `log_decision()`.
+- `elapsed_ms` / `input_tokens` / `output_tokens` — already captured in
+  `ProviderResult` (Sprint 5) and consumed by `HealingBudget`; currently
+  thrown away after budget tracking instead of also being logged.
+- `attempt` — `HealingBudget.attempts_for(selector)` already computes
+  this; just needs to be read and included.
+
+These four are genuinely just "stop discarding data we already have,"
+not new design work — safe to add in a small pass whenever convenient,
+no architectural decision required.
+
+**Larger, deliberately deferred — needs real design work first:**
+- `decision` as a richer enum (e.g. `AUTO_APPLIED` / `AUTO_REJECTED` /
+  `HUMAN_APPROVED` / `HUMAN_REJECTED`) instead of a bare `accepted: bool`.
+  Today, `accepted: false` doesn't distinguish "zero confidence, nothing
+  to evaluate" from "human said no" from "autonomous policy threshold
+  not met" — those are three different stories currently flattened into
+  one boolean. Worth designing this vocabulary once, deliberately,
+  alongside Sprint 6/7's `history_store.py` schema (which already needs
+  to resolve Gap #1, healing correctness) — rather than picking enum
+  values now and re-doing it when the real schema gets designed.
+
+### Future consideration: Allure Healing Dashboard instead of accumulated screenshots
+
+Raised in follow-up discussion, directly replacing the "Demo" section's
+original plan (a handful of terminal screenshots). One dashboard with
+several widgets tells a much stronger story than a pile of individual
+screenshots — same underlying argument as Gap #9's heuristic control:
+a single well-designed comparison communicates more than scattered
+point-in-time evidence.
+
+Proposed widgets: success rate, healing timeline, confidence
+distribution, top repaired selectors, failure reasons, budget usage,
+provider comparison (No Healer / Heuristic / LLM — directly visualizing
+the Gap #9 benchmark result).
+
+Important dependency noted: "budget usage" and "provider comparison"
+widgets directly require the richer log fields above (`elapsed_ms`,
+tokens, `provider`) — these two future-ideas aren't independent, the
+dashboard is the consumer of the enriched log. Sequencing: enrich the
+log first (small fields now or in Sprint 6), build `history_store.py`
+(Sprint 6/7) and the benchmark runner (Sprint 8), THEN the Allure
+dashboard (Sprint 9) has real data to render instead of placeholder
+numbers.
+
 ---
 
 ## TODO (future sprints)
