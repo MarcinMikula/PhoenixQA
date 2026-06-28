@@ -1310,6 +1310,39 @@ end-to-end — the core claim ("Autonomous Mode makes its own
 accept/reject decision with no human involved, respecting a confidence
 policy") is demonstrated working, not just designed.
 
+### Bug found by careful log reading: "mode" field always said "safe", even for Autonomous Mode
+
+Spotted by directly inspecting `healing_decisions.log` after the live
+Autonomous Mode run above — every entry said `"mode": "safe"`, including
+ones confirmed (via the absence of any terminal prompt) to have gone
+through `_attempt_heal_autonomous()`. Root cause: `log_decision()` had
+hardcoded `"mode": "safe"` since Sprint 4, with a comment saying "Sprint
+5 will log autonomous from the other path" — but when Sprint 5's
+`_attempt_heal_autonomous()` was written, its `log_decision()` call never
+actually passed a mode override, so the hardcoded value silently won
+every time, from both code paths.
+
+This is the same category of bug as the rotation-suffix regex (Sprint 2)
+and the truncated-JSON classifier gap (Sprint 4) — looks completely fine
+by inspection (the log writes, the JSON is well-formed, every other field
+is correct), and only surfaces by actually reading the output critically
+rather than just confirming "no exception was raised." Worth naming as a
+recurring pattern: a field that's silently wrong is more dangerous than
+a missing field, because nothing fails loudly to reveal it.
+
+Consequence if left unfixed: any future Safe-vs-Autonomous comparison
+(Sprint 6/7 Healing History, Sprint 8 benchmark) built on this field
+would have been silently corrupted — every Autonomous Mode decision
+miscounted as Safe Mode.
+
+Fix: `log_decision()` now takes an explicit `mode` parameter (defaulting
+to `"safe"` for backward compatibility with existing call sites that
+genuinely are Safe Mode), and `Healer` passes `mode="safe"` /
+`mode="autonomous"` explicitly from each of its two branches. Two new
+unit tests protect this: one confirming `mode="autonomous"` is correctly
+recorded, one confirming the default still produces `"safe"` when not
+specified. 43/43 unit tests pass.
+
 ---
 
 ## TODO (future sprints)

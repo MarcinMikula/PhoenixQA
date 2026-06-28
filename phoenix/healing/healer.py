@@ -125,7 +125,7 @@ class Healer:
             # that has nothing to do with the original failure. This
             # case is auto-rejected before the human is even asked —
             # there's nothing to review.
-            log_decision(context, proposal, accepted=False)
+            log_decision(context, proposal, accepted=False, mode="safe")
             raise HealingRejectedError(
                 f"Healing proposal was empty or zero-confidence for broken "
                 f"selector '{broken_selector}' — likely a malformed LLM "
@@ -134,7 +134,7 @@ class Healer:
             )
 
         accepted = request_human_review(context, proposal)
-        log_decision(context, proposal, accepted)
+        log_decision(context, proposal, accepted, mode="safe")
 
         if not accepted:
             raise HealingRejectedError(
@@ -191,7 +191,12 @@ class Healer:
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
         )
-        log_decision(context, proposal, accepted=(proposal.confidence >= self.policy.min_confidence))
+        log_decision(
+            context,
+            proposal,
+            accepted=(proposal.confidence >= self.policy.min_confidence),
+            mode="autonomous",
+        )
 
         if timer.elapsed_ms > self.policy.max_time_per_heal_ms:
             raise HealingLimitExceededError(

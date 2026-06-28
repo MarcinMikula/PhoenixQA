@@ -89,3 +89,31 @@ class TestLogDecision:
         entry = json.loads(log_path.read_text(encoding="utf-8").strip())
         assert entry["accepted"] is False
         assert entry["reasoning"] == "Same form position, matching data-testid prefix"
+
+    def test_mode_is_explicit_not_hardcoded(self, tmp_path):
+        # Caught via a real live run: log_decision() previously hardcoded
+        # "mode": "safe" unconditionally, so every Autonomous Mode
+        # decision was silently mislabeled in the log — harmless-looking
+        # but would have corrupted any future Safe-vs-Autonomous analysis
+        # built on this field (Sprint 6/7 Healing History, Sprint 8
+        # benchmark). This test protects the fix: mode must reflect what
+        # the caller actually passes, defaulting to "safe" only when
+        # genuinely not specified.
+        log_path = tmp_path / "healing_decisions.log"
+        log_decision(
+            _sample_context(), _sample_proposal(), accepted=True,
+            mode="autonomous", log_path=str(log_path),
+        )
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["mode"] == "autonomous"
+
+    def test_mode_defaults_to_safe_when_not_specified(self, tmp_path):
+        # Backward-compatible default — existing call sites that don't
+        # pass mode explicitly still log "safe", matching prior behavior
+        # for genuinely Safe Mode callers.
+        log_path = tmp_path / "healing_decisions.log"
+        log_decision(_sample_context(), _sample_proposal(), accepted=True, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["mode"] == "safe"

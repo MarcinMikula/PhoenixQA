@@ -30,6 +30,7 @@ def log_decision(
     context: HealingContext,
     proposal: HealingProposal,
     accepted: bool,
+    mode: str = "safe",
     log_path: str = DEFAULT_LOG_PATH,
 ) -> None:
     """
@@ -37,6 +38,13 @@ def log_decision(
     human would need to review later: what broke, what was proposed, what
     was decided, and why. This is deliberately NOT just "accepted: true/false"
     — see module docstring.
+
+    mode must be passed explicitly by the caller ("safe" or "autonomous")
+    — caught via a real live run: this previously hardcoded "safe"
+    unconditionally, so every Autonomous Mode decision was silently
+    mislabeled in the log. Harmless-looking in isolation, but would have
+    quietly corrupted any future Safe-vs-Autonomous analysis (Sprint 6/7
+    Healing History, Sprint 8 benchmark) built on this field.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -51,7 +59,7 @@ def log_decision(
         "alternative_selectors": proposal.alternative_selectors,
         "raw_response": proposal.raw_response,
         "accepted": accepted,
-        "mode": "safe",  # Sprint 5 will log "autonomous" from the other path
+        "mode": mode,
     }
 
     log_file = Path(log_path)
