@@ -125,7 +125,13 @@ class Healer:
             # that has nothing to do with the original failure. This
             # case is auto-rejected before the human is even asked —
             # there's nothing to review.
-            log_decision(context, proposal, accepted=False, mode="safe")
+            log_decision(
+                context, proposal, accepted=False, mode="safe",
+                provider=self.settings.ai_provider,
+                elapsed_ms=result.elapsed_ms,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
             raise HealingRejectedError(
                 f"Healing proposal was empty or zero-confidence for broken "
                 f"selector '{broken_selector}' — likely a malformed LLM "
@@ -134,7 +140,13 @@ class Healer:
             )
 
         accepted = request_human_review(context, proposal)
-        log_decision(context, proposal, accepted, mode="safe")
+        log_decision(
+            context, proposal, accepted, mode="safe",
+            provider=self.settings.ai_provider,
+            elapsed_ms=result.elapsed_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
 
         if not accepted:
             raise HealingRejectedError(
@@ -196,6 +208,15 @@ class Healer:
             proposal,
             accepted=(proposal.confidence >= self.policy.min_confidence),
             mode="autonomous",
+            provider=self.settings.ai_provider,
+            # Full collect+analyze lifecycle, not just the LLM call —
+            # matches what max_time_per_heal_ms actually measures (see
+            # method docstring point 2), so the logged number is the
+            # same one the budget check below compares against.
+            elapsed_ms=timer.elapsed_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            attempt=self.budget.attempts_for(broken_selector),
         )
 
         if timer.elapsed_ms > self.policy.max_time_per_heal_ms:

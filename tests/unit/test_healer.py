@@ -13,6 +13,8 @@ Autonomous Mode tests (Sprint 5) cover the three-stage gate: budget
 check before calling the LLM, lifecycle timing, and confidence threshold
 — plus confirm budget consumption happens even when an attempt fails.
 """
+import json
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -46,6 +48,7 @@ def _make_healer(healing_mode="safe", policy=None):
     """
     settings = MagicMock()
     settings.healing_mode = healing_mode
+    settings.ai_provider = "ollama"  # must be a real string — log_decision() JSON-serializes it
 
     healer = Healer.__new__(Healer)
     healer.settings = settings
@@ -131,6 +134,40 @@ class TestHealerAutonomousMode:
         assert healer.budget.input_tokens_used == 800
         assert healer.budget.output_tokens_used == 120
         assert healer.budget.attempts_total == 1
+
+    def test_log_entry_includes_provider_tokens_and_attempt_number(self, tmp_path, monkeypatch):
+        # Verifies the log enrichment is actually wired through, not just
+        # "doesn't crash" — provider/elapsed_ms/tokens/attempt were all
+        # already available in memory before this fix; the bug was that
+        # they were silently discarded instead of reaching the log.
+        monkeypatch.chdir(tmp_path)
+        policy = AutonomousPolicy(min_confidence=0.75)
+        healer = _make_healer(healing_mode="autonomous", policy=policy)
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            proposal=HealingProposal(
+                proposed_selector="[data-testid='btn-login-4t64']",
+                confidence=0.95,
+                reasoning="Found matching base name with rotated suffix",
+                alternative_selectors=[],
+                raw_response="{...}",
+            ),
+            input_tokens=800,
+            output_tokens=120,
+        )
+
+        healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
+
+        log_path = tmp_path / "healing_decisions.log"
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["provider"] == "ollama"
+        assert entry["input_tokens"] == 800
+        assert entry["output_tokens"] == 120
+        assert entry["attempt"] == 1
+        # elapsed_ms must be a real measured value, not None/missing —
+        # exact value is non-deterministic (real timer), just confirm
+        # it's a sane non-negative number.
+        assert isinstance(entry["elapsed_ms"], int)
+        assert entry["elapsed_ms"] >= 0
 
     def test_confidence_below_policy_threshold_is_rejected_no_human_involved(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

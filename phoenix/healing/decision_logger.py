@@ -31,6 +31,11 @@ def log_decision(
     proposal: HealingProposal,
     accepted: bool,
     mode: str = "safe",
+    provider: str = None,
+    elapsed_ms: int = None,
+    input_tokens: int = None,
+    output_tokens: int = None,
+    attempt: int = None,
     log_path: str = DEFAULT_LOG_PATH,
 ) -> None:
     """
@@ -45,6 +50,16 @@ def log_decision(
     mislabeled in the log. Harmless-looking in isolation, but would have
     quietly corrupted any future Safe-vs-Autonomous analysis (Sprint 6/7
     Healing History, Sprint 8 benchmark) built on this field.
+
+    provider/elapsed_ms/input_tokens/output_tokens/attempt are all
+    optional and default to None — Safe Mode call sites that don't have
+    ProviderResult timing/token data on hand (or callers from before this
+    was added) still log a valid entry, just with these fields null
+    rather than fabricated. See LEARNINGS.md "Future consideration:
+    richer decision log fields" — these were already being computed
+    in-memory (ProviderResult, HealingBudget) and simply discarded after
+    budget tracking instead of also being logged; this is pure wiring,
+    not new logic.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -60,6 +75,11 @@ def log_decision(
         "raw_response": proposal.raw_response,
         "accepted": accepted,
         "mode": mode,
+        "provider": provider,
+        "elapsed_ms": elapsed_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "attempt": attempt,
     }
 
     log_file = Path(log_path)

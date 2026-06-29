@@ -75,19 +75,20 @@ or visually obscured despite being "visible" in the DOM sense).
 
 ## Richer decision log fields
 
-Small bucket (safe anytime): `provider`, `elapsed_ms`, `input_tokens`,
-`output_tokens`, `attempt` — all already computed in memory (`ProviderResult`,
-`HealingBudget`) when `log_decision()` is called, just not currently
-passed through to the log. Pure wiring, no new logic.
+**Small bucket — DONE.** `provider`, `elapsed_ms`, `input_tokens`,
+`output_tokens`, `attempt` implemented in `log_decision()` as optional
+parameters, wired through from both Safe Mode and Autonomous Mode call
+sites in `Healer`. Verified with a dedicated test that reads back actual
+log file content. 44/44 unit tests pass.
 
-Larger bucket (deliberately deferred): replacing the bare `accepted: bool`
+**Larger bucket — still deferred.** Replacing the bare `accepted: bool`
 field with a richer `decision` enum (`AUTO_APPLIED`/`AUTO_REJECTED`/
 `HUMAN_APPROVED`/`HUMAN_REJECTED`) — today `accepted: false` conflates
 three different stories into one boolean. Worth designing once,
 deliberately, alongside Sprint 6/7's `history_store.py` schema.
 
-**Revisit:** small bucket — anytime, low risk. Larger bucket — Sprint 6/7,
-alongside Gap #1 (healing correctness) resolution.
+**Revisit:** larger bucket — Sprint 6/7, alongside Gap #1 (healing
+correctness) resolution.
 
 ## Allure Healing Dashboard (replaces the "pile of screenshots" demo plan)
 

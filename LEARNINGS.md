@@ -1405,6 +1405,33 @@ log first (small fields now or in Sprint 6), build `history_store.py`
 dashboard (Sprint 9) has real data to render instead of placeholder
 numbers.
 
+### Implemented now (not deferred): the "small bucket" log fields
+
+Per direct discussion, decided to do the small/safe bucket immediately
+rather than wait for Sprint 6 — `provider`, `elapsed_ms`, `input_tokens`,
+`output_tokens`, `attempt` added to `log_decision()` as optional
+parameters (defaulting to `None` so older call sites without this data
+still log valid entries). `decision` enum confirmed deferred per direct
+agreement ("decision może poczekać").
+
+One real bug caught while wiring this through: existing `test_healer.py`
+mocks used `MagicMock()` for `settings` without setting `ai_provider` to
+a real value — once `Healer` started reading `self.settings.ai_provider`
+to log it, `json.dumps()` choked on trying to serialize a `MagicMock`
+object. Same lesson as Sprint 2/4's other "looks fine until you actually
+exercise the new code path" bugs — fixed by setting `settings.ai_provider
+= "ollama"` explicitly in the test helper. Also added a dedicated test
+(`test_log_entry_includes_provider_tokens_and_attempt_number`) that reads
+back the actual log file content rather than just confirming "no
+exception was raised" — verifying a logging fix by checking the log
+itself, not by absence of a crash. 44/44 unit tests pass.
+
+Note: in Autonomous Mode, `elapsed_ms` logs the FULL collect+analyze
+lifecycle via `HealLifecycleTimer` (matching what `max_time_per_heal_ms`
+actually measures), not just the LLM call's own `ProviderResult.elapsed_ms`
+— the two numbers differ and the log intentionally keeps the one that
+matches the budget check it sits next to.
+
 ---
 
 ## TODO (future sprints)
