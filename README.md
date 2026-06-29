@@ -17,9 +17,9 @@ A class was renamed. A `data-testid` rotated. A wrapper `<div>` appeared around 
 
 **PhoenixQA** intercepts those failures, feeds the context to an LLM, and either:
 - proposes a fix for human review (**Safe Mode** — live)
-- applies the fix automatically within a confidence/budget policy and continues (**Autonomous Mode** — in progress)
+- applies the fix automatically within a confidence/budget policy and continues (**Autonomous Mode** — live)
 
-Every Safe Mode decision is logged today. Once Healing History (Sprint 7) lands, that log becomes the basis for a self-training loop that improves future healing (Sprint 8) — not yet built, but the logging that feeds it already is.
+Every decision — human-reviewed or autonomous — is logged today, including which provider made the call, how many tokens it cost, and how long it took. Once Healing History (Sprint 7) lands, that log becomes the basis for a self-training loop that improves future healing (Sprint 8) — not yet built, but the logging that feeds it already is.
 
 ### Scope: where this starts, and where it's going
 
@@ -77,6 +77,8 @@ business-correct (e.g. "did login actually succeed"). That judgment
 stays with the test's own assertions, same as it always has. See
 docs/gaps.md Gap #11 for why this boundary is deliberate.
 ```
+
+Autonomous Mode raises one of three distinct exception types depending on *why* it didn't heal — `HealingRejectedError` (bad/low-confidence proposal), `HealingLimitExceededError` (budget exhausted), `HealingFailedError` (provider/API crashed) — so a CI failure report says exactly what happened, not just "healing didn't work."
 
 ---
 
@@ -170,7 +172,7 @@ Switch via single env variable. No code changes.
 | Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
 | Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
 | Sprint 4 | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
-| Sprint 5 | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ⏳ In progress |
+| Sprint 5 | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
 | Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
 | Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8 | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
@@ -202,10 +204,13 @@ npm run dev
 
 # 5. In a SEPARATE terminal (npm run dev keeps step 4's terminal busy):
 cd ..
-# Run tests against it — Safe Mode is live (Sprint 4)
-# -s is REQUIRED: Safe Mode prompts for accept/reject via input(),
+# Run tests against it — both Safe Mode (Sprint 4) and Autonomous Mode
+# (Sprint 5) are live. Switch via .env: HEALING_MODE=safe | autonomous
+#
+# -s is REQUIRED for Safe Mode: it prompts for accept/reject via input(),
 # and pytest swallows stdin/stdout without -s — the prompt never
 # reaches the terminal and the run just hangs with no explanation.
+# Autonomous Mode doesn't need -s (no prompts), but it doesn't hurt either.
 pytest tests/chaos/ -m chaos -s
 ```
 
@@ -213,7 +218,9 @@ pytest tests/chaos/ -m chaos -s
 
 ## 🎬 Demo
 
-*(Parked until Sprint 5+ — once the Healer is actually catching and fixing failures, this section gets real screenshots/GIFs of a test failing on a rotated selector, healing, and going green. Not worth showing a static form screenshot before there's something to demonstrate.)*
+Healing is confirmed working live as of Sprint 5 — Safe Mode and Autonomous Mode have both been run end-to-end against the real Chaos App and a local LLM, with selectors successfully healed and retried in place.
+
+The actual demo artifact, though, is parked until Sprint 9: rather than a pile of terminal screenshots, the plan is a single **Allure Healing Dashboard** (success rate, healing timeline, confidence distribution, top repaired selectors, failure reasons, budget usage, provider comparison) — built once Sprint 6-8 (failure type expansion, healing history, benchmark runner) produce real data for it to render. See `docs/future-ideas.md` for the reasoning.
 
 ---
 
