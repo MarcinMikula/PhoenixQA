@@ -1432,6 +1432,43 @@ actually measures), not just the LLM call's own `ProviderResult.elapsed_ms`
 — the two numbers differ and the log intentionally keeps the one that
 matches the budget check it sits next to.
 
+## Process reflection (not a sprint change)
+
+A morning-after observation worth recording verbatim in spirit, because
+it's a genuinely useful meta-comment on how this project has actually
+been built, not a technical decision:
+
+PhoenixQA's SDLC has been inverted relative to a classical V-model. The
+project started from a single, narrow requirement ("the self-healer will
+heal locators") and every subsequent requirement — failure type
+classification, confidence policy, stop conditions, the heuristic
+control, business-validation boundaries — was DISCOVERED through
+building, not specified up front. Genuinely Agile/incremental in
+practice, but also genuinely backwards from "requirements → design →
+build → test" as a textbook would draw it. 13+ years of QA instinct
+correctly flags this as unusual — and also correctly recognizes it as
+how real incremental product development actually happens, as opposed
+to the V-model fiction.
+
+**Concrete consequence for Sprint 8 (Healing Benchmark Runner):** because
+the whole project's STLC has been informal and emergent so far (manual
+end-to-end runs catching real bugs, ad-hoc but rigorous), Sprint 8 is the
+moment to do a PROPER STLC pass — not just write a benchmark runner as
+more code, but treat the benchmark itself as something requiring genuine
+test planning: a clear test strategy (what is actually being measured
+and why), defined entry/exit criteria (when is a benchmark run
+considered complete and trustworthy), and — critically — validation of
+the benchmark's own measurement validity before trusting its output.
+
+Why this matters specifically for Sprint 8: the entire Gap #9 narrative
+("we measured whether the LLM was actually necessary, rather than
+assuming it") only holds up if the measurement itself was done properly.
+An informally-built benchmark producing a number nobody rigorously
+validated would undercut the exact R&D credibility the heuristic control
+was designed to provide. Not a scope change — a reminder to apply real
+STLC discipline specifically at the one sprint where the project's
+output is itself a measurement instrument, not a feature.
+
 ---
 
 ## TODO (future sprints)

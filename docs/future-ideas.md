@@ -104,6 +104,21 @@ runner) produce real data for it to visualize. Sequencing matters here —
 building the dashboard before the data pipeline exists means it ships
 with fake numbers.
 
+## Apply proper STLC discipline to Sprint 8 specifically
+
+Process reflection, not a technical idea: this project's SDLC has been
+inverted relative to a classical V-model — requirements discovered
+through building, not specified up front (genuinely Agile, also
+genuinely backwards from the textbook order). Sprint 8 (Healing
+Benchmark Runner) is the moment to apply a proper STLC pass — real test
+strategy, entry/exit criteria, and validation of the benchmark's own
+measurement validity — because the entire Gap #9 narrative ("we measured
+whether the LLM was necessary") only holds up if the measurement itself
+was rigorously built, not just coded.
+
+**Revisit:** Sprint 8, as a discipline reminder at the start of that
+sprint, not a scope change to any sprint before it.
+
 ## Where to read more
 Search `LEARNINGS.md` for "Future consideration" or the bolded idea name
 above for the full brainstorm, rejected alternatives, and any code
