@@ -15,6 +15,7 @@ indexes in `docs/`:
 - [`docs/architecture-decisions.md`](docs/architecture-decisions.md) — key decisions, grouped by area
 - [`docs/known-limitations.md`](docs/known-limitations.md) — what's deliberately incomplete or fragile right now
 - [`docs/future-ideas.md`](docs/future-ideas.md) — brainstormed possibilities, deliberately deferred
+- [`docs/testing-strategy.md`](docs/testing-strategy.md) — quality strategy for PhoenixQA itself: unit/integration/e2e/regression-benchmark/non-functional, plan vs actual state
 
 Each index entry is a short summary + pointer back here — full reasoning
 always lives in this file, never duplicated.

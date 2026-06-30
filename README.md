@@ -48,6 +48,13 @@ shallow strategies at once. The other three are committed scope, not a
 [`docs/gaps.md`](docs/gaps.md) for a quick-scan status table of every
 open architectural question.
 
+**How this project approaches quality as a whole** — not just unit
+tests on the framework's own code, but a layered strategy covering
+integration, end-to-end behavior against a real LLM, regression
+benchmarking of healing effectiveness, and non-functional resilience to
+malformed model output — is laid out in
+[`docs/testing-strategy.md`](docs/testing-strategy.md).
+
 ---
 
 ## 🏗️ Architecture
@@ -132,7 +139,8 @@ PhoenixQA/
 │   ├── gaps.md              # all numbered architectural gaps, status at a glance
 │   ├── architecture-decisions.md
 │   ├── known-limitations.md
-│   └── future-ideas.md
+│   ├── future-ideas.md
+│   └── testing-strategy.md  # unit/integration/e2e/regression-benchmark/non-functional plan + actual state
 ├── chaos_app/                # React/Vite — intentionally unstable test target
 │   └── src/chaos/            # selectorRotation, domMutation, asyncDelay, shadowDom
 ├── phoenix/
