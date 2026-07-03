@@ -40,6 +40,16 @@ this file is a map, not a copy.
   information for the LLM to reason about.
 - **Shadow DOM is checked in its own pass, scored alongside light DOM**,
   not as an upfront "scan everything just in case."
+- **`ContextCollector` becomes a router over `BaseContextCollector`
+  subclasses, one per `FailureType` (Sprint 6 pre-coding decision).**
+  The Sprint 2 if/elif ladder was fine for one implemented failure type;
+  extending it to `DETACHED_FROM_DOM` (and later `NOT_VISIBLE`/
+  `TIMEOUT_WAITING`), each needing structurally different collected data,
+  was judged to have crossed the point where a shared function body is a
+  liability rather than a convenience. `selector_collector.py` carries
+  today's `SELECTOR_NOT_FOUND` logic across unchanged; `context_collector.py`
+  itself becomes a thin router, mirroring the existing `provider_factory.py`
+  pattern. See Gap #12 in `docs/gaps.md` and `LEARNINGS.md` Sprint 6.
 
 ## AI provider layer
 
@@ -58,6 +68,15 @@ this file is a map, not a copy.
 - **`HeuristicProvider` (planned) is an experimental control, not a
   product feature.** Its purpose is to prove the LLM adds value over
   cheap fuzzy matching — see Gap #9 in `docs/gaps.md`.
+- **Prompt templates split into one module per `FailureType` (Sprint 6
+  pre-coding decision), not one prompt with conditional sections.**
+  `phoenix/ai/prompts/selector_prompt.py`, `detached_prompt.py`, etc.,
+  routed via a small `get_prompt_for(failure_type)` function. Reasoning:
+  "find a replacement selector in this HTML" and "given this timing/
+  mutation data, should the action be retried, and after what wait?" are
+  different cognitive tasks for the model — conflating them into one
+  prompt with branches would produce a worse prompt for both cases than
+  two focused ones. See `LEARNINGS.md` Sprint 6, Decision #3.
 
 ## Autonomous Mode (Sprint 5)
 
@@ -107,6 +126,45 @@ this file is a map, not a copy.
   Infrastructure failures (server down) and selector failures are
   different problem classes — confirmed by experiment (Chaos App
   stopped → clean `ERR_CONNECTION_REFUSED`, Healer never invoked).
+
+## Failure type expansion (Sprint 6 pre-coding)
+
+- **"Recover selector" is a special case of "recover action," not the
+  general case (Gap #12).** `SELECTOR_NOT_FOUND` had a clean framing —
+  selector stops resolving, propose a new one. `DETACHED_FROM_DOM` breaks
+  that framing: the selector may still be perfectly correct, but the
+  in-flight action lost its target mid-execution when the element was
+  removed and replaced by the framework. `Healer`'s job for this and the
+  remaining failure types is reframed as proposing a RECOVERY STRATEGY
+  for an interrupted action, not a replacement locator string.
+- **`HealingProposal` is retired as the universal provider return
+  shape, replaced by a `HealingAction` ABC hierarchy.** Forcing
+  "wait 400ms and retry" through a `proposed_selector: str` field would
+  either corrupt that field's meaning everywhere it's read, or grow the
+  dataclass into an ever-expanding bag of optional fields — the same
+  anti-pattern already rejected once in Gap #11 for a different reason
+  (a callback-per-action API). `SelectorReplacement` becomes the
+  `SELECTOR_NOT_FOUND`-specific subclass; `RetryStrategy` (Sprint 6),
+  `WaitStrategy` and `VisibilityStrategy` (declared now, implemented in
+  later sprints) join it. `ProviderResult.proposal` becomes
+  `ProviderResult.action`. Flagged as a required, blocking refactor
+  touching `Healer`, `safe_mode.py`, `decision_logger.py`, and
+  `response_parser.py`'s fallback path — comparable in breadth to
+  Sprint 5's `HealingProposal → ProviderResult` refactor.
+- **Sprint 6 is built as four vertical sub-sprints (6A-6D), one failure
+  type (`DETACHED_FROM_DOM`) only, not four failure types in parallel.**
+  Same instinct as Sprint 2→5's sequencing, applied one level deeper:
+  6A (Chaos App mechanism + classifier only, zero healing logic), 6B
+  (context collector against a live page), 6C (prompt producing a
+  parseable proposal), 6D (full Healer integration, both modes). Each
+  slice has historically surfaced a real bug in this project (fill() vs
+  click() classifier gap in Sprint 4, mode-logging bug in Sprint 5) that
+  breadth-first building would have masked.
+- **Divergence over unification, reaffirmed as explicit policy.**
+  PhoenixQA deliberately does not try to collapse the four failure types
+  into one generic "AI fixes it" mechanism. More specialized components
+  than shared logic, after Sprint 6, is read as a sign the architecture
+  fits the problem — not as premature complexity.
 
 ## Documentation structure
 

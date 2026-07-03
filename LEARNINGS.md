@@ -1472,6 +1472,237 @@ output is itself a measurement instrument, not a feature.
 
 ---
 
+## Sprint 6 (pre-coding) — Failure type expansion: four architectural decisions before writing code
+
+### Why this round of gap analysis matters more than the previous ones
+
+Every prior sprint's gap analysis (Gap #4 in Sprint 2, Gap #10/#11 in
+Sprint 5) was found by trying to write pseudo-code and noticing it didn't
+fit. This time the gaps were found BEFORE any pseudo-code — a direct,
+critical review of the Sprint 6 plan surfaced four decisions that each
+reshape a core abstraction (`ContextCollector`, `HealingProposal`, the
+prompt layer) before a single `DetachedFromDomCollector` line gets
+written. Confirmed instinct from Sprint 2: "better to prove the full
+pipeline on one well-understood failure type first" — but the corollary,
+now that a SECOND failure type is actually being built, is that the
+abstractions designed around ONE failure type (`SELECTOR_NOT_FOUND`) need
+to be checked for whether they generalize, not assumed to.
+
+Agreement reached in direct discussion: not only should this gap analysis
+happen before code, it should go FURTHER than previous sprints' analyses —
+Sprint 5 already showed that "the bigger the scope taken at once, the
+higher the chance of an architectural gap surfacing mid-sprint." Sprint 6
+responds by both resolving four decisions up front AND splitting
+implementation into sub-sprints (see below) rather than one continuous
+Sprint 6 push.
+
+### Decision #1 (→ Gap #12, NEW) — "recover selector" vs "recover action"
+
+For `SELECTOR_NOT_FOUND` the framing was always clean: selector stops
+resolving → LLM proposes a new selector → done. `DETACHED_FROM_DOM` breaks
+this framing at the root, not at the edges:
+
+```
+selector resolves fine
+        │
+element exists
+        │
+framework re-renders mid-action
+        │
+old element node is gone, a new (structurally identical) one exists
+```
+
+There is no "broken selector" to replace here — the selector may well
+still be correct. What actually failed is the ACTION (the click/fill
+against a specific element reference), not the LOCATOR STRING. Playwright
+already retries a locator against the live DOM by default; what it does
+NOT do is retry an in-flight action after the target it had committed to
+disappeared mid-click. This means `Healer` for `DETACHED_FROM_DOM` isn't
+proposing a replacement selector — it's proposing a RECOVERY STRATEGY for
+an interrupted action (re-locate + retry, wait-and-retry, etc.).
+
+**Decision:** `DETACHED_FROM_DOM` (and, by the same reasoning, `NOT_VISIBLE`
+and `TIMEOUT_WAITING`) are not "selector healing" — they're "action
+recovery." `SELECTOR_NOT_FOUND` is the special case where recovery happens
+to mean "propose a new selector." This is now the intended reading of
+Gap #4's original framing ("selector healer" vs "UI automation healer"
+are the same higher-level problem) — Sprint 6 is where that framing has
+to actually be load-bearing in the code, not just in prose. Filed as
+**Gap #12** in `docs/gaps.md` since it's a genuinely new architectural
+question, not a restatement of Gap #4 (Gap #4 was "should we build this
+at all"; Gap #12 is "what does the abstraction look like now that we are").
+
+### Decision #2 — ContextCollector becomes polymorphic, not an if/elif ladder
+
+Current `ContextCollector.collect()` (Sprint 2) routes on `failure_type`
+with a single `if failure_type == SELECTOR_NOT_FOUND: ... else: raise
+NotImplementedError`. Extending this with three more branches, each
+needing DIFFERENT collected data (DOM subtree for selector matching vs.
+timing/mutation-observer data for detachment vs. computed-style/overlay
+data for visibility), is exactly the kind of branching that starts to
+smell once a third and fourth branch join a second — enough real
+divergence in what each branch actually DOES that a shared function body
+stops being a convenience and starts being a liability.
+
+**Decision:** introduce a `BaseContextCollector` (ABC) with one
+`collect(broken_selector, error, original_code) -> HealingContext`
+method, and one concrete subclass per `FailureType`:
+
+```
+phoenix/collector/
+├── context_collector.py       # becomes a thin router/factory, mirrors
+│                               # provider_factory.py's existing pattern
+└── collectors/
+    ├── selector_collector.py      # today's _collect_selector_context, moved as-is
+    ├── detached_collector.py      # NEW, Sprint 6B
+    ├── visibility_collector.py    # NEW, future sprint
+    └── timeout_collector.py       # NEW, future sprint
+```
+
+`ContextCollector.collect()` keeps its role as the single entry point
+`Healer` calls, classifies via `classify_playwright_error()` same as
+today, then delegates to the matching subclass instance. No behavior
+change for `SELECTOR_NOT_FOUND` — this is a pure refactor for that path,
+with the payoff showing up in Sprint 6B onward.
+
+### Decision #3 — the prompt layer splits the same way
+
+`prompt_templates.py`'s `SYSTEM_PROMPT` is written entirely around "find
+a replacement selector in this HTML." For `DETACHED_FROM_DOM` the task
+given to the model is categorically different — not "find X in this
+snapshot" but "given this sequence of DOM mutation events / timing data,
+should the action be retried, and after what wait?" These are different
+COGNITIVE tasks for the model, not just different template strings —
+conflating them into one big prompt with conditional sections would
+produce a worse prompt for both cases than two focused ones.
+
+**Decision:** mirror Decision #2's structure in the prompt layer:
+
+```
+phoenix/ai/prompts/
+├── selector_prompt.py     # today's SYSTEM_PROMPT + build_user_prompt, moved as-is
+├── detached_prompt.py     # NEW, Sprint 6C
+├── visibility_prompt.py   # NEW, future sprint
+└── timeout_prompt.py      # NEW, future sprint
+```
+
+`prompt_templates.py` keeps a small `get_prompt_for(failure_type)` router
+function so `OllamaProvider`/`AnthropicProvider` don't need to know which
+prompt module to import directly.
+
+### Decision #4 — `HealingProposal` cannot stay the universal return type
+
+This is the decision with the widest blast radius, so it's flagged loudly
+rather than folded in quietly. `HealingProposal` today is:
+
+```python
+proposed_selector: str
+confidence: float
+reasoning: str
+alternative_selectors: list
+```
+
+This shape is meaningless for `DETACHED_FROM_DOM` — there is no
+"proposed_selector" to give if the actual proposal is "wait 400ms and
+retry the click." Forcing every future failure type's output through
+`proposed_selector` would mean either (a) abusing that field to carry
+non-selector data as a string, which corrupts its meaning for every piece
+of downstream code that reads it (decision logger, Safe Mode terminal
+display, Autonomous Mode's confidence gate), or (b) bolting on
+`wait_ms: Optional[int] = None`, `retry: Optional[bool] = None`, etc. as
+more and more optional fields on one dataclass — the same anti-pattern
+already rejected once, for a different reason, in Gap #11's "Option A"
+(a callback-per-action API accumulating parameters over time).
+
+**Decision:** introduce a small `HealingAction` type hierarchy, with
+`HealingProposal` becoming (in effect) the `SELECTOR_NOT_FOUND`-specific
+member of that hierarchy rather than the universal type:
+
+```python
+class HealingAction(ABC):
+    confidence: float
+    reasoning: str
+
+@dataclass
+class SelectorReplacement(HealingAction):
+    proposed_selector: str
+    alternative_selectors: list = field(default_factory=list)
+
+@dataclass
+class RetryStrategy(HealingAction):        # DETACHED_FROM_DOM
+    wait_ms: int
+    reacquire_locator: bool
+
+@dataclass
+class WaitStrategy(HealingAction):         # TIMEOUT_WAITING
+    wait_ms: int
+
+@dataclass
+class VisibilityStrategy(HealingAction):   # NOT_VISIBLE
+    action: str   # e.g. "scroll_into_view", "dismiss_overlay", "wait"
+```
+
+**Sprint 6 scope:** declare the hierarchy now (same move as the
+`FailureType` enum in Sprint 2 — declare the shape so nothing needs
+reshaping later, implement only what's needed this sprint). Only
+`SelectorReplacement` and `RetryStrategy` get real provider
+implementations in Sprint 6; `WaitStrategy`/`VisibilityStrategy` stay
+declared-not-implemented until their own sprints, exactly like
+`FailureType`'s unimplemented branches did in Sprint 2.
+
+**Required refactor, not optional:** `ProviderResult.proposal` becomes
+`ProviderResult.action: HealingAction`, and every call site that reads
+`proposal.proposed_selector` / `proposal.confidence` directly (`Healer`,
+`safe_mode.py`'s terminal display, `decision_logger.py`) needs updating
+to branch on the concrete `HealingAction` subtype, or to rely on fields
+common to the base class (`confidence`, `reasoning`) where it can stay
+type-agnostic. `response_parser.py`'s fallback (`_fallback_proposal`)
+also needs an equivalent per-action-type fallback path. Tracked as a
+blocking Sprint 6 sub-task, not a "nice to have" — same seriousness as
+Sprint 5's `HealingProposal → ProviderResult` refactor, which touched the
+same breadth of call sites.
+
+### Decision: Sprint 6 is broken into sub-sprints, DETACHED_FROM_DOM only
+
+Same instinct as Sprint 2's "prove one failure type end-to-end before
+generalizing," applied one level deeper this time — even within ONE new
+failure type, the pipeline gets built and verified in thin vertical
+slices rather than all four layers (classifier → collector → prompt →
+strategy) at once:
+
+| Sub-sprint | Scope | Exit criterion |
+|---|---|---|
+| 6A | `chaos_app/src/chaos/componentRemount.jsx` (per existing spec) + classifier extended to recognize `DETACHED_FROM_DOM` | Classifier correctly returns `DETACHED_FROM_DOM` on a real remount-mid-action failure — verified live. **Zero healing logic touched.** |
+| 6B | `DetachedFromDomCollector` (Decision #2) | Collector gathers real timing/mutation context from a live page — verified against real Chaos App, not yet fed to an LLM |
+| 6C | `detached_prompt.py` (Decision #3) | Prompt produces a parseable `RetryStrategy`-shaped response against real Ollama output |
+| 6D | `Healer._attempt_heal_*` branches handle `RetryStrategy` end-to-end | Full collect→analyze→apply→retry loop confirmed live for `DETACHED_FROM_DOM`, both Safe and Autonomous Mode |
+
+`NOT_VISIBLE` and `TIMEOUT_WAITING` are explicitly NOT started until
+6A-6D are done and verified — same sequencing logic as Sprint 2→3→4→5,
+and the same reason: each vertical slice has historically surfaced a real
+bug (Sprint 4's `fill()` vs `click()` classifier gap, Sprint 5's
+mode-logging bug) that would have been masked by building breadth-first.
+
+### Reaffirmed philosophy: divergence over unification
+
+Explicit, deliberate stance for Sprint 6 and beyond, confirmed in direct
+discussion: PhoenixQA does NOT try to collapse `selector_not_found` /
+`detached_from_dom` / `not_visible` / `timeout_waiting` into one generic
+"AI fixes it" mechanism. The README already stated this ("more than one
+root cause") as a framing choice; Sprint 6 is where it becomes an
+architectural commitment — `BaseContextCollector` subclasses, per-type
+prompts, and a `HealingAction` hierarchy are MORE code than a single
+unified path would be, and that's treated as a sign of a correctly-shaped
+architecture for this problem, not as premature complexity. The
+alternative — one `ContextCollector`, one prompt, one `HealingProposal`
+shape stretched to cover four unrelated failure modes — would look
+simpler on a diagram and be actively wrong the moment failure type #3
+needed data #1 and #2 never needed. If, after Sprint 6, the codebase has
+more specialized components than shared logic, that is read as a sign of
+a well-fitted architecture, not over-engineering.
+
+---
+
 ## TODO (future sprints)
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
@@ -1496,3 +1727,11 @@ output is itself a measurement instrument, not a feature.
 - Sprint 6/7/8: dedicated pass on cost accounting — prompt token budgets, DOM snapshot storage size limits, history_store.py retention policy, benchmark wall-clock runtime budget — premature to size now, revisit once real numbers exist from Sprint 3/4
 - Sprint 3/4: revisit context_collector.py's multiple page.evaluate() round-trips (up to 4 per failure) once real cost/timing data exists — premature to optimize now
 - Sprint 5: DONE — verified Autonomous Mode against real Chaos App + Ollama with HEALING_MODE=autonomous. Confirmed min_confidence=0.75 auto-accepts good proposals (0.85-0.95) and auto-rejects bad ones (0.0, truncated JSON), zero terminal prompts either way
+- Sprint 6 (NEW, pre-coding decision): `ContextCollector` becomes a router over `BaseContextCollector` subclasses (`phoenix/collector/collectors/`) — one per FailureType — instead of an if/elif ladder. `SELECTOR_NOT_FOUND` logic moves into `selector_collector.py` unchanged; this is a pure refactor with no behavior change for the existing path
+- Sprint 6 (NEW, pre-coding decision): `prompt_templates.py` splits into `phoenix/ai/prompts/` with one module per FailureType (`selector_prompt.py`, `detached_prompt.py`, ...), routed via a small `get_prompt_for(failure_type)` function
+- Sprint 6 (NEW, pre-coding decision, BLOCKING): introduce `HealingAction` ABC hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) to replace `HealingProposal` as the universal provider return shape. `ProviderResult.proposal` → `ProviderResult.action`. Requires updating `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`'s fallback path — same breadth as Sprint 5's HealingProposal→ProviderResult refactor
+- Sprint 6A: `componentRemount.jsx` + classifier extended to recognize `DETACHED_FROM_DOM` — classifier-only exit criterion, zero healing logic touched in this sub-sprint
+- Sprint 6B: `DetachedFromDomCollector` — verified against a live page, not yet wired to an LLM
+- Sprint 6C: `detached_prompt.py` — verified to produce a parseable `RetryStrategy` against real Ollama output
+- Sprint 6D: `Healer` handles `RetryStrategy` end-to-end for `DETACHED_FROM_DOM`, both Safe and Autonomous Mode — full Sprint 6 exit criterion
+- Sprint 6 (deferred until 6A-6D verified): `NOT_VISIBLE` and `TIMEOUT_WAITING` collectors/prompts/strategies — not started in parallel, same sequencing logic as Sprint 2→5

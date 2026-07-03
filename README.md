@@ -35,8 +35,8 @@ rather than all at once:
 
 | Failure type | Status |
 |---|---|
-| `selector_not_found` — classic renamed/rotated selector | 🚧 Building first (Sprint 2-5) |
-| `detached_from_dom` — framework re-render mid-action | 🔜 Required, not yet built |
+| `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
+| `detached_from_dom` — framework re-render mid-action | 🚧 In progress — architecture decided, implementation split into Sprint 6A-6D (see below) |
 | `not_visible` — element exists but hidden/blocked | 🔜 Required, not yet built |
 | `timeout_waiting` — never reaches an actionable state | 🔜 Required, not yet built |
 
@@ -47,6 +47,17 @@ shallow strategies at once. The other three are committed scope, not a
 "maybe later" — see `LEARNINGS.md` for the full reasoning, or
 [`docs/gaps.md`](docs/gaps.md) for a quick-scan status table of every
 open architectural question.
+
+**Important framing shift for `detached_from_dom` and beyond (Gap #12):**
+for `selector_not_found`, the selector itself is what's broken, and the
+fix is a replacement selector. For the remaining three failure types the
+selector may be perfectly correct — what actually failed is the
+in-flight ACTION (e.g. a click against an element that got removed and
+replaced mid-click by a framework re-render). PhoenixQA treats
+`selector_not_found` as the special case where "recover the action" happens
+to mean "propose a new selector" — the other failure types recover the
+action a different way (retry with a wait, re-acquire the locator, dismiss
+an overlay, etc.). See `docs/gaps.md` Gap #12 and `LEARNINGS.md` Sprint 6.
 
 **How this project approaches quality as a whole** — not just unit
 tests on the framework's own code, but a layered strategy covering
@@ -63,10 +74,20 @@ malformed model output — is laid out in
 Test Failure
     │
     ▼
-Context Collector        ← DOM snapshot, weighted semantic scoring, shadow DOM piercing
+Failure Classifier        ← FailureType (selector_not_found, detached_from_dom, ...)
     │
     ▼
-LLM Analyzer             ← Ollama (local) or Anthropic API → structured JSON proposal
+Context Collector          ← one collector per FailureType (Sprint 6+):
+    │                          selector_collector.py    (DOM snapshot, weighted scoring)
+    │                          detached_collector.py     (timing/mutation data, Sprint 6B)
+    │                          visibility_collector.py    (future)
+    │                          timeout_collector.py       (future)
+    ▼
+LLM Analyzer               ← Ollama (local) or Anthropic API → structured HealingAction
+    │                          SelectorReplacement (selector_not_found)
+    │                          RetryStrategy         (detached_from_dom, Sprint 6)
+    │                          WaitStrategy          (timeout_waiting, future)
+    │                          VisibilityStrategy    (not_visible, future)
     │
     ├──► Safe Mode        ← Human reviews full context, accepts/rejects → Ground Truth
     │
@@ -86,6 +107,8 @@ docs/gaps.md Gap #11 for why this boundary is deliberate.
 ```
 
 Autonomous Mode raises one of three distinct exception types depending on *why* it didn't heal — `HealingRejectedError` (bad/low-confidence proposal), `HealingLimitExceededError` (budget exhausted), `HealingFailedError` (provider/API crashed) — so a CI failure report says exactly what happened, not just "healing didn't work."
+
+**Current implementation status (as of Sprint 6 pre-coding):** the `Context Collector → LLM Analyzer → HealingAction` split above is the target architecture for Sprint 6 onward. As of today, `ContextCollector` is still a single class, `prompt_templates.py` is still one module, and providers still return `HealingProposal` (the `selector_not_found`-only shape) — the polymorphic collector/prompt structure and the `HealingAction` hierarchy are decided but not yet implemented. See [`docs/known-limitations.md`](docs/known-limitations.md) for the precise current-vs-planned boundary.
 
 ---
 
@@ -109,6 +132,8 @@ Mechanisms ranked by real-world realism (most enterprise frontends break this wa
 | Selector Rotation  | 9/10    | Classic — renamed class/id/data-testid |
 | Async Delay        | 8/10    | Lazy loading, animations, network-dependent rendering |
 | Shadow DOM         | 5/10    | Real, but narrower — mostly Web Components / LWC-style platforms |
+
+A 5th mechanism, **component remount / detach-mid-action** (`componentRemount.jsx`), is scoped into Sprint 6A specifically to give `detached_from_dom` something real to classify against — not yet built as of this writing.
 
 **Controlling the chaos level:**
 
@@ -142,12 +167,12 @@ PhoenixQA/
 │   ├── future-ideas.md
 │   └── testing-strategy.md  # unit/integration/e2e/regression-benchmark/non-functional plan + actual state
 ├── chaos_app/                # React/Vite — intentionally unstable test target
-│   └── src/chaos/            # selectorRotation, domMutation, asyncDelay, shadowDom
+│   └── src/chaos/            # selectorRotation, domMutation, asyncDelay, shadowDom, componentRemount (Sprint 6A)
 ├── phoenix/
-│   ├── collector/            # failure_classifier, context_collector (weighted semantic scoring)
-│   ├── healing/              # healer, safe_mode, decision_logger, autonomous_mode
+│   ├── collector/            # failure_classifier, context_collector (router, Sprint 6) + collectors/ (per-FailureType, Sprint 6)
+│   ├── healing/               # healer, safe_mode, decision_logger, autonomous_mode
 │   ├── ai/                   # base_provider, ollama_provider, anthropic_provider,
-│   │                         # prompt_templates, response_parser, provider_factory
+│   │                         # prompts/ (per-FailureType, Sprint 6), response_parser, provider_factory
 │   ├── training/             # Healing history (Sprint 7)
 │   └── reporting/            # Allure Phoenix Healing Report (Sprint 9)
 ├── pages/                    # Page Objects for Chaos App (POM pattern)
@@ -173,18 +198,30 @@ Switch via single env variable. No code changes.
 
 ## 🗺️ Roadmap
 
-| Sprint   | Focus                                                         | Status     |
-|----------|---------------------------------------------------------------|------------|
-| Sprint 0 | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
-| Sprint 1 | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
-| Sprint 2 | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
-| Sprint 3 | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
-| Sprint 4 | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
-| Sprint 5 | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
-| Sprint 6 | Failure type expansion — `detached_from_dom`, `not_visible`, `timeout_waiting` | ⏳ Planned  |
-| Sprint 7 | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
-| Sprint 8 | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
-| Sprint 9 | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
+| Sprint    | Focus                                                         | Status     |
+|-----------|-----------------------------------------------------------------|------------|
+| Sprint 0  | Repo scaffold, config, AI provider stubs                      | ✅ Done     |
+| Sprint 1  | Chaos App — React/Vite, selector rotation, DOM mutation, async delay, Shadow DOM | ✅ Done     |
+| Sprint 2  | Context Collector — `selector_not_found` only (DOM snapshot, weighted scoring) | ✅ Done     |
+| Sprint 3  | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
+| Sprint 4  | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
+| Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
+| Sprint 6  | Failure type expansion — `detached_from_dom` (architecture decided; see 6A-6D below), `not_visible` and `timeout_waiting` deferred until 6A-6D verified | 🚧 In progress (pre-coding decisions made, implementation not started) |
+| Sprint 6A | `componentRemount.jsx` + classifier extended to recognize `DETACHED_FROM_DOM` — classifier-only, zero healing logic | ⏳ Planned |
+| Sprint 6B | `DetachedFromDomCollector` — verified against a live page | ⏳ Planned |
+| Sprint 6C | `detached_prompt.py` — verified to produce a parseable `RetryStrategy` against real Ollama output | ⏳ Planned |
+| Sprint 6D | `Healer` handles `RetryStrategy` end-to-end, both Safe and Autonomous Mode — Sprint 6 exit criterion | ⏳ Planned |
+| Sprint 7  | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
+| Sprint 8  | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
+| Sprint 9  | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
+
+**Sprint 6 architectural decisions made before any code was written** (full reasoning in `LEARNINGS.md`, indexed in `docs/gaps.md` Gap #12 and `docs/architecture-decisions.md`):
+1. `detached_from_dom` (and the other non-selector failure types) are reframed as **action recovery**, not selector replacement — there may be nothing wrong with the selector itself.
+2. `ContextCollector` becomes a router over one `BaseContextCollector` subclass per `FailureType`, replacing the current if/elif ladder.
+3. The prompt layer splits the same way — one prompt module per `FailureType`, since "find a selector" and "should this action be retried, and after what wait" are different cognitive tasks for the model.
+4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`.
+
+Sprint 6 itself is then built as four vertical sub-sprints (6A-6D) for `detached_from_dom` only, rather than all three remaining failure types in parallel — the same "prove one thing end-to-end before generalizing" instinct that shaped Sprint 2→5, applied one level deeper.
 
 ---
 

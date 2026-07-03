@@ -19,14 +19,43 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   `NotImplementedError` by design. Confirmed via hands-on Salesforce
   Lightning experience that these are likely MORE common in real
   enterprise apps than selector renaming — this is a required future
-  sprint, not a nice-to-have.
+  sprint, not a nice-to-have. **Sprint 6 (in progress, pre-coding
+  decisions made) closes this gap for `DETACHED_FROM_DOM` only** — see
+  the Sprint 6 entry below. `NOT_VISIBLE` and `TIMEOUT_WAITING` remain
+  `NotImplementedError` until their own future sprints.
 - **Chaos App has no mechanism simulating component remount /
   detach-mid-action.** Needed before `DETACHED_FROM_DOM` handling can
-  even be tested, let alone implemented.
+  even be tested, let alone implemented. **Scoped into Sprint 6A** as
+  `chaos_app/src/chaos/componentRemount.jsx` — not yet built as of this
+  writing (pre-coding decisions only, no Sprint 6 code merged yet).
 - **Autonomous Mode is fully unimplemented and deliberately blocked.**
   `Healer.attempt_heal()` raises `NotImplementedError` if
   `HEALING_MODE=autonomous` — won't be unblocked until stop conditions
   (`max_attempts`/`max_cost_per_test`/`max_time_per_heal`) exist.
+  *(Historical note: this was true prior to Sprint 5. Autonomous Mode has
+  since been implemented and verified live — see `LEARNINGS.md` Sprint 5.
+  Left here as-is as a record of the state at the time this limitation
+  was first written; not a currently accurate limitation.)*
+
+## Scope boundary about to change (Sprint 6, pre-coding — not yet built)
+
+- **`HealingProposal` is still the only provider return shape in the
+  codebase today.** A `HealingAction` hierarchy (`SelectorReplacement`,
+  `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) has been decided
+  architecturally for Sprint 6 but not yet implemented — `ProviderResult.
+  proposal` still exists; the planned rename to `ProviderResult.action`
+  and the accompanying `Healer`/`safe_mode.py`/`decision_logger.py`/
+  `response_parser.py` updates are pending. Until that refactor lands,
+  do not assume any non-selector failure type can produce a structured
+  proposal — only `SelectorReplacement`-shaped output is wired end to
+  end.
+- **`ContextCollector` is still a single class with an if/elif-shaped
+  routing method**, not yet the planned `BaseContextCollector` subclass
+  router. The Sprint 6 refactor (moving `_collect_selector_context` into
+  `collectors/selector_collector.py` unchanged, and adding
+  `detached_collector.py`) has been decided but not implemented.
+- **`prompt_templates.py` is still one module**, not yet split into
+  `phoenix/ai/prompts/` per failure type. Planned for Sprint 6C.
 
 ## Known fragility (tracked, not yet fixed)
 
