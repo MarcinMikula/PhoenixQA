@@ -175,6 +175,41 @@ this file is a map, not a copy.
   full content. One source of truth per fact; indexes exist for fast
   lookup, not as a second copy to keep in sync.
 
+## Commit message convention
+
+Adopted informally across recent commits, formalized here so it doesn't
+require re-deciding each time. One-line prefix + short imperative
+summary, optional body for anything that isn't obvious from the diff
+alone:
+
+```
+<prefix>: <short imperative summary>
+
+<optional body — the "why", not a restatement of the diff. Link back
+to a Gap # or Sprint # in LEARNINGS.md when the change traces to one.>
+```
+
+| Prefix | Use for |
+|---|---|
+| `docs:` | `LEARNINGS.md`, `docs/*.md`, `README.md` — no code changes |
+| `feat:` | new capability (a new FailureType strategy, a new provider, a new chaos mechanism) |
+| `fix:` | correcting a bug in existing behavior (e.g. the fill()/click() classifier gap, the hardcoded log mode) |
+| `refactor:` | restructuring without changing behavior (e.g. `HealingProposal` → `ProviderResult`, the planned `ContextCollector` → router split) |
+| `test:` | test-only changes — new unit tests, fixing a flaky test, no production code touched |
+
+Guidance, not a hard rule: prefer one prefix per commit — a commit that's
+genuinely both `feat:` and `refactor:` (e.g. Sprint 5's `HealingProposal`→
+`ProviderResult` change, which was refactor-shaped but unlocked new
+behavior) can pick whichever better describes the *reader-facing*
+consequence, and explain the other half in the body.
+
+Body is optional for small, self-explanatory changes (a typo fix, a
+one-line default correction) but expected for anything a future reader
+of `git log` would otherwise have to reconstruct from LEARNINGS.md
+anyway — if the commit closes or advances a numbered Gap, say so
+explicitly (`Gap #12`, `Sprint 6B`, etc.) so the commit history and the
+journal stay cross-referenceable in both directions.
+
 ## Where to read more
 Search `LEARNINGS.md` for the bolded decision phrasing above (e.g.
 "Decision: ground truth logging") to find the full reasoning and any
