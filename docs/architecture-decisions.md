@@ -126,6 +126,16 @@ this file is a map, not a copy.
   Infrastructure failures (server down) and selector failures are
   different problem classes — confirmed by experiment (Chaos App
   stopped → clean `ERR_CONNECTION_REFUSED`, Healer never invoked).
+- **`BasePage.click()`/`fill()` catch `HealingRejectedError`/
+  `HealingLimitExceededError`/`HealingFailedError` and re-raise the
+  ORIGINAL Playwright exception**, not the Healer's internal one. This
+  had been the documented design intent since Sprint 4/5 (see
+  `healer.py`'s exception docstrings) but was never actually implemented
+  until a Sprint 6A live run surfaced the mismatch — pytest was reporting
+  a confusing "confidence below threshold" message instead of the real
+  `TimeoutError`. The rich diagnosis stays available in
+  `healing_decisions.log`; pytest's own failure report is the same clean
+  one a reader would see whether or not healing was enabled at all.
 
 ## Failure type expansion (Sprint 6 pre-coding)
 

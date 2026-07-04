@@ -1830,9 +1830,112 @@ on both sides. Not yet run as of this entry. Next concrete step before
 Sprint 6A is considered closed — same discipline as every prior sprint's
 "built and unit tested" vs. "verified live" distinction.
 
+### Bug found during first live test run after Sprint 6A changes: BasePage never actually caught Healer's decline exceptions
+
+First `python -m pytest tests/chaos/ -m chaos -s` run after copying the
+Sprint 6A files in produced a confusing failure — NOT related to
+`componentRemount.jsx` at all (that mechanism wasn't even enabled yet;
+`COMPONENT_REMOUNT_ENABLED` defaults to `false` and the run used
+defaults). `failure_type: "selector_not_found"` in `healing_decisions.log`
+confirmed this: `username` and `password` healed and were accepted
+normally (autonomous mode), but `btn-login` hit the same already-known
+Ollama truncated-JSON failure mode documented repeatedly since Sprint 4
+(verbose `reasoning` field, model cut off mid-generation) — nothing new
+about the LLM behavior itself.
+
+What WAS new: the test failed with
+
+```
+phoenix.healing.healer.HealingRejectedError: Autonomous policy rejected
+proposed fix '' for broken selector '[data-testid='btn-login']':
+confidence 0.00 below policy threshold 0.75
+```
+
+— not the underlying `playwright._impl._errors.TimeoutError` that
+actually triggered healing in the first place. This directly contradicts
+what `healer.py`'s own docstrings have said since Sprint 4/5:
+`HealingRejectedError`'s docstring states "the ORIGINAL test failure is
+what should actually be reported... let the original Playwright error
+surface to pytest rather than this one," and the `Healer` class docstring
+says the same for all three exception types. Checked `pages/base_page.py`
+directly: `click()`/`fill()` catch `PlaywrightTimeout` and call
+`attempt_heal()`, but never wrapped that call in a `try/except` for
+`HealingRejectedError` / `HealingLimitExceededError` / `HealingFailedError`
+— so whichever of those three the Healer raised propagated straight to
+pytest instead of the original timeout. Documented design intent and
+actual implementation had quietly diverged since Sprint 4, and nothing
+had exercised this exact path clearly enough to surface it — in Safe
+Mode a human typically accepts good proposals, and prior Autonomous Mode
+live runs (Sprint 5) apparently didn't examine the pytest-level failure
+message closely enough to notice the mismatch, only the decision log.
+
+This is the same category of bug as the Sprint 2 rotation-suffix regex
+and the Sprint 5 hardcoded log mode: looks completely fine by
+inspection (the code runs, an exception IS raised, the test DOES fail as
+a failing heal should), and only surfaces by checking that the RIGHT
+exception is what's actually surfacing — "a test fails" and "a test
+fails with an actionable, correct message" are different claims, exactly
+Gap #1's underlying "test passing ≠ correctness" concern showing up in
+error reporting rather than in healing correctness this time.
+
+**Fix:** `BasePage.click()`/`fill()` now wrap `attempt_heal()` in a
+`try/except` for the three decline exceptions and re-raise the ORIGINAL
+Playwright exception (`e`) — matching the documented contract exactly.
+The full "why healing failed" detail (confidence, raw LLM response,
+reasoning) remains available in `healing_decisions.log` for anyone who
+needs to diagnose it; pytest's own failure report goes back to being the
+same clean, familiar `TimeoutError` a reader would expect whether or not
+healing was even enabled. Six new unit tests
+(`tests/unit/test_base_page.py`) cover all three decline exception types
+for both `click()` and `fill()`, plus regression coverage for the
+successful-heal and healing-disabled paths, using a mocked `Healer` (no
+live page or LLM needed — same testing posture as `test_healer.py`).
+25/25 unit tests pass.
+
+**Note for the still-pending Sprint 6A live verification:** this fix is
+orthogonal to whether the `DETACHED_FROM_DOM` classifier substrings are
+correct — that question is still open and needs a run with
+`COMPONENT_REMOUNT_ENABLED=true` (root `.env`) AND
+`VITE_COMPONENT_REMOUNT_ENABLED=true` (`chaos_app/.env`, chaos app dev
+server restarted after the change) on both sides. Today's run, by
+coincidence, surfaced a real but unrelated bug before Sprint 6A's actual
+mechanism was ever exercised — worth remembering as a reminder that a
+red test run can be carrying more than one finding at once, and each one
+deserves its own diagnosis rather than being attributed to whatever
+change was most recent.
+
+### Recurring pattern confirmed: `chaos_app/.env` didn't pick up the new flag either
+
+Same live-verification session, same underlying cause as the root `.env`
+gotcha above, just on the Chaos App side this time: `VITE_COMPONENT_
+REMOUNT_ENABLED` was added to `chaos_app/.env.example` but never
+propagated to the real, gitignored `chaos_app/.env` — the debug panel
+correctly showed `Component Remount ... disabled` even after a full
+`npm run dev` restart, because the env var genuinely wasn't set to
+anything, not because Vite failed to pick up a change. Confirms the
+Sprint 5 lesson generalizes beyond the Python side: `.env.example`
+changes never reach either real `.env` file automatically, on either
+side of this repo, and checking the actual gitignored file directly is
+always the first move before suspecting the code — this is now the
+second time this exact category of gotcha has appeared (Sprint 5:
+`OLLAMA_MODEL`/`HEALING_MODE`; Sprint 6A: `VITE_COMPONENT_REMOUNT_ENABLED`).
+
+### Verified live: BasePage correctly re-raises the original Playwright error
+
+The fix documented above was confirmed against a real run: pytest's
+`short test summary info` reported `playwright._impl._errors.TimeoutError`
+for both failing tests, not `HealingRejectedError` — exactly the intended
+behavior. Traceback confirmed the new `except`/`raise e` path was the one
+actually taken (`pages\base_page.py:99: in fill / raise e`). This closes
+the loop on that fix — implemented, unit tested, and now also confirmed
+live, same three-stage verification bar every other fix in this project
+has needed.
+
 ---
 
 ## TODO (future sprints)
+
+
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
@@ -1859,7 +1962,8 @@ Sprint 6A is considered closed — same discipline as every prior sprint's
 - Sprint 6 (NEW, pre-coding decision): `ContextCollector` becomes a router over `BaseContextCollector` subclasses (`phoenix/collector/collectors/`) — one per FailureType — instead of an if/elif ladder. `SELECTOR_NOT_FOUND` logic moves into `selector_collector.py` unchanged; this is a pure refactor with no behavior change for the existing path
 - Sprint 6 (NEW, pre-coding decision): `prompt_templates.py` splits into `phoenix/ai/prompts/` with one module per FailureType (`selector_prompt.py`, `detached_prompt.py`, ...), routed via a small `get_prompt_for(failure_type)` function
 - Sprint 6 (NEW, pre-coding decision, BLOCKING): introduce `HealingAction` ABC hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) to replace `HealingProposal` as the universal provider return shape. `ProviderResult.proposal` → `ProviderResult.action`. Requires updating `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`'s fallback path — same breadth as Sprint 5's HealingProposal→ProviderResult refactor
-- Sprint 6A: DONE (pending live verification) — `componentRemount.jsx` (RemountTrigger.TIMEOUT only, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. ContextCollector untouched, as scoped. Next step: run `pytest tests/chaos/ -m chaos -s` live with the new flag enabled and confirm the classifier's hand-crafted message samples match Playwright's real output
+- Sprint 6A: DONE (pending live verification) — `componentRemount.jsx` (RemountTrigger.TIMEOUT only, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. ContextCollector untouched, as scoped. Next step: rerun `pytest tests/chaos/ -m chaos -s` with `COMPONENT_REMOUNT_ENABLED=true` / `VITE_COMPONENT_REMOUNT_ENABLED=true` set on BOTH sides (chaos app dev server restarted) and confirm the classifier's hand-crafted message samples match Playwright's real output — the first live run after Sprint 6A did NOT actually exercise this flag
+- Sprint 6A live run: DONE — fixed `BasePage.click()`/`fill()` not catching `HealingRejectedError`/`HealingLimitExceededError`/`HealingFailedError` and re-raising the original Playwright error, per `healer.py`'s documented (but previously unimplemented) contract. 6 new regression tests in `tests/unit/test_base_page.py`. Unrelated to `DETACHED_FROM_DOM` — found incidentally while attempting to verify Sprint 6A live
 - Sprint 6B: `DetachedFromDomCollector` — verified against a live page, not yet wired to an LLM
 - Sprint 6C: `detached_prompt.py` — verified to produce a parseable `RetryStrategy` against real Ollama output
 - Sprint 6D: `Healer` handles `RetryStrategy` end-to-end for `DETACHED_FROM_DOM`, both Safe and Autonomous Mode — full Sprint 6 exit criterion
