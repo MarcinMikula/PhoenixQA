@@ -4,7 +4,8 @@
  * Wires the 3 demo components to the active chaos config.
  * The "Active chaos" panel at the top is a debugging aid for you
  * (and future you) — it makes the invisible (rotating selectors, shadow
- * DOM, delays) visible while developing/inspecting in the browser.
+ * DOM, delays, component remounts) visible while developing/inspecting
+ * in the browser.
  */
 import { getChaosConfigFromEnv } from './chaos/chaosConfig'
 import { LoginForm } from './components/LoginForm'
@@ -29,11 +30,15 @@ function App() {
           <li>Level: {config.level}</li>
           <li>Mechanisms: {config.mechanisms.join(', ') || 'none'}</li>
           <li>Shadow DOM: {config.shadowDomEnabled ? 'enabled' : 'disabled'}</li>
+          <li>Component Remount (Sprint 6A, TIMEOUT trigger): {config.componentRemountEnabled ? 'enabled' : 'disabled'}</li>
         </ul>
       </div>
 
       <main>
-        <LoginForm activeMechanisms={config.mechanisms} />
+        <LoginForm
+          activeMechanisms={config.mechanisms}
+          componentRemountEnabled={config.componentRemountEnabled}
+        />
         <TicketList
           activeMechanisms={config.mechanisms}
           shadowDomEnabled={config.shadowDomEnabled}

@@ -27,6 +27,13 @@ class Settings:
     chaos_app_url: str = os.getenv("CHAOS_APP_URL", "http://localhost:5173")
     chaos_level: str = os.getenv("CHAOS_LEVEL", "MEDIUM")  # LOW | MEDIUM | HIGH
     shadow_dom_enabled: bool = os.getenv("SHADOW_DOM_ENABLED", "false").lower() == "true"
+    # Sprint 6A — independent flag, same pattern as shadow_dom_enabled.
+    # Informational on the Python side today (mirrors chaos_app's own
+    # VITE_COMPONENT_REMOUNT_ENABLED, which is what actually drives the
+    # app's behavior) — kept here for the same reason chaos_level and
+    # shadow_dom_enabled are: a single place a test run's full chaos
+    # configuration can be read from, without digging into the chaos app.
+    component_remount_enabled: bool = os.getenv("COMPONENT_REMOUNT_ENABLED", "false").lower() == "true"
     db_path: str = os.getenv("DB_PATH", "phoenix/training/healing_history.db")
     default_timeout: int = int(os.getenv("DEFAULT_TIMEOUT", "10000"))
     healing_timeout: int = int(os.getenv("HEALING_TIMEOUT", "30000"))

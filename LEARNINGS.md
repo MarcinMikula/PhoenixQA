@@ -1703,6 +1703,135 @@ a well-fitted architecture, not over-engineering.
 
 ---
 
+## Sprint 6A — component remount mechanism + classifier extension (implemented, pending live verification)
+
+### Design refinement from direct discussion: remount CAUSE, not just remount EXISTENCE
+
+Before writing `componentRemount.jsx`, the initial one-size-fits-all "chaos
+timer" idea was refined into something more useful scientifically. Real
+component remounts have distinct real-world causes, and a healer's
+behavior might plausibly need to differ depending on which one occurred:
+
+- **TIMEOUT** — a periodic re-render unrelated to user interaction (e.g.
+  a polling subscription re-rendering its container).
+- **STATE_CHANGE** — typing → validation → re-render. Very common in
+  form-heavy enterprise UIs.
+- **NETWORK_RESPONSE** — click → `fetch()` → response → component
+  recreated. Judged the second-most-common real enterprise case after
+  TIMEOUT, based on direct experience.
+
+This turns Chaos App from testing "does DETACHED_FROM_DOM handling exist
+at all" into eventually testing "does the Healer's behavior correctly
+depend on WHY the detachment happened" — a more interesting scientific
+question, one level beyond what Sprint 6A itself answers.
+
+**Decision: implement ONLY `RemountTrigger.TIMEOUT` in Sprint 6A.** Same
+phased-rollout instinct as `FailureType` in Sprint 2 and `CHAOS_LEVELS`
+in Sprint 1 — declare the full enum now (`TIMEOUT`, `STATE_CHANGE`,
+`NETWORK_RESPONSE`) so `componentRemount.jsx` doesn't need reshaping when
+the other two get built, but implement one variant fully rather than
+three shallowly. `STATE_CHANGE` is tentatively slotted for Sprint 8/9,
+`NETWORK_RESPONSE` for Sprint 10 — not committed dates, just a plausible
+sequencing noted for future reference. Requesting an unimplemented
+trigger throws immediately and loudly (mirrors the Python-side
+`NotImplementedError` convention already used in `context_collector.py`
+and `failure_classifier.py`) rather than silently no-op'ing.
+
+### Design refinement: remount ONE component, not the whole form
+
+A second refinement from the same discussion: remounting an entire
+`<form>` would be a much cruder simulation than what real frameworks
+actually do. React reconciliation and Lightning re-renders typically
+replace one component at a time, leaving siblings untouched — a
+`<button>` gets recreated while the inputs around it are undisturbed, not
+"the whole screen goes away and comes back."
+
+**Decision:** `ComponentRemountWrapper` wraps exactly one child element.
+Implementation forces a genuine DOM node replacement (not just a
+re-render) by changing the wrapped child's `key` prop on a timer — React
+treats a key change as "this is a different element" and tears down the
+old DOM node rather than patching it in place. This distinction matters:
+a same-node re-render would never actually produce a
+`DETACHED_FROM_DOM`-shaped Playwright failure, since Playwright would
+just see the same node with possibly-updated attributes.
+
+**Decision: repeats on an interval (200-800ms), not a single one-shot
+remount.** A single remount only rarely collides with an in-flight
+Playwright action. A repeating remount both matches real re-render loops
+(which recur, not fire once) and meaningfully increases the odds that a
+live test run actually reproduces the target failure within a normal
+test timeout window.
+
+### Decision: target the login submit button, continuing the same research story
+
+Consistent with the project's established pattern of changing one
+variable at a time (Sprint 2's "prove SELECTOR_NOT_FOUND fully before
+generalizing," Sprint 6's "prove DETACHED_FROM_DOM fully before
+NOT_VISIBLE/TIMEOUT_WAITING"): the first `DETACHED_FROM_DOM` target is
+`LoginForm`'s submit button, not a new component or a different form.
+Sprint 2 through 5 were all built and verified against the same login
+flow — introducing a new failure type AND a new UI scenario
+simultaneously would confound which variable caused what, if something
+doesn't work as expected on the first live run. Login is also the
+simplest possible case to reason about (`fill → fill → click → element
+detached`) and the natural first row in the eventual Sprint 8 benchmark
+table, for the same reason `selector_not_found` used login first.
+
+**Consequence:** `component_remount` joins `shadow_dom` as an
+INDEPENDENT flag (`COMPONENT_REMOUNT_ENABLED` / `VITE_COMPONENT_REMOUNT_
+ENABLED`), not a member of `CHAOS_LEVELS`. Same reasoning as Sprint 1's
+Shadow DOM decoupling: this isn't "more chaos" on the
+selector-rename/DOM-mutation/timing axis the levels already cover — it's
+a different failure family entirely, combinable with any level (e.g.
+`HIGH + component_remount_enabled` is a valid, meaningful combination
+once Sprint 7's benchmark runner exists to actually run it).
+
+### Implementation: classifier extended, ContextCollector untouched (as scoped)
+
+`classify_playwright_error()` gained a new check for
+`DETACHED_FROM_DOM`, based on substring matches against Playwright's
+documented actionability-check vocabulary (`"not attached to the dom"`,
+`"element is not attached"`, `"was detached from the dom"`). Checked
+**before** the existing `"waiting for locator"` check, because a
+detached-mid-action message also contains that phrase (Playwright logs
+it for every action) — the more specific "not attached" signal has to
+win, or every `DETACHED_FROM_DOM` failure would silently misclassify as
+`SELECTOR_NOT_FOUND`.
+
+`ContextCollector.collect()` is UNCHANGED apart from a clarified
+`NotImplementedError` message pointing at Sprint 6B specifically — per
+the Sprint 6A exit criterion, zero collection or healing logic was
+touched this sub-sprint. A `DETACHED_FROM_DOM` failure today still
+raises `NotImplementedError` after being correctly classified; that's
+the intended state until Sprint 6B ships `DetachedFromDomCollector`.
+
+**Honest epistemic flag, consistent with how this file has always
+handled classifier changes:** the substrings above are inferred from
+Playwright's public actionability-check documentation, not yet captured
+from a real Playwright error produced by `componentRemount.jsx` running
+against a live browser. Sprint 2's original classifier and Sprint 4's
+`fill()`/`click()` fix both needed correction after a real end-to-end run
+revealed a message shape hand-crafted samples didn't anticipate — there
+is no reason to expect this branch is exempt from that same pattern.
+Four new unit tests (`TestClassifyPlaywrightErrorDetachedFromDom`) cover
+the hand-crafted samples, including the critical ordering case (detached
+message that also contains "waiting for locator" must still classify as
+`DETACHED_FROM_DOM`), but these are NOT a substitute for a live run —
+same distinction this project has drawn since Sprint 2's "unit tests
+pass" vs. "pipeline works end-to-end."
+
+**Sprint 6A exit criterion status: implemented, live verification
+pending.** The classifier-only exit criterion from the Sprint 6 sub-sprint
+table ("classifier correctly returns DETACHED_FROM_DOM on a real
+remount-mid-action failure — verified live") requires an actual
+`pytest tests/chaos/ -m chaos -s` run against Chaos App with
+`COMPONENT_REMOUNT_ENABLED=true` / `VITE_COMPONENT_REMOUNT_ENABLED=true`
+on both sides. Not yet run as of this entry. Next concrete step before
+Sprint 6A is considered closed — same discipline as every prior sprint's
+"built and unit tested" vs. "verified live" distinction.
+
+---
+
 ## TODO (future sprints)
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
@@ -1730,7 +1859,7 @@ a well-fitted architecture, not over-engineering.
 - Sprint 6 (NEW, pre-coding decision): `ContextCollector` becomes a router over `BaseContextCollector` subclasses (`phoenix/collector/collectors/`) — one per FailureType — instead of an if/elif ladder. `SELECTOR_NOT_FOUND` logic moves into `selector_collector.py` unchanged; this is a pure refactor with no behavior change for the existing path
 - Sprint 6 (NEW, pre-coding decision): `prompt_templates.py` splits into `phoenix/ai/prompts/` with one module per FailureType (`selector_prompt.py`, `detached_prompt.py`, ...), routed via a small `get_prompt_for(failure_type)` function
 - Sprint 6 (NEW, pre-coding decision, BLOCKING): introduce `HealingAction` ABC hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) to replace `HealingProposal` as the universal provider return shape. `ProviderResult.proposal` → `ProviderResult.action`. Requires updating `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`'s fallback path — same breadth as Sprint 5's HealingProposal→ProviderResult refactor
-- Sprint 6A: `componentRemount.jsx` + classifier extended to recognize `DETACHED_FROM_DOM` — classifier-only exit criterion, zero healing logic touched in this sub-sprint
+- Sprint 6A: DONE (pending live verification) — `componentRemount.jsx` (RemountTrigger.TIMEOUT only, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. ContextCollector untouched, as scoped. Next step: run `pytest tests/chaos/ -m chaos -s` live with the new flag enabled and confirm the classifier's hand-crafted message samples match Playwright's real output
 - Sprint 6B: `DetachedFromDomCollector` — verified against a live page, not yet wired to an LLM
 - Sprint 6C: `detached_prompt.py` — verified to produce a parseable `RetryStrategy` against real Ollama output
 - Sprint 6D: `Healer` handles `RetryStrategy` end-to-end for `DETACHED_FROM_DOM`, both Safe and Autonomous Mode — full Sprint 6 exit criterion

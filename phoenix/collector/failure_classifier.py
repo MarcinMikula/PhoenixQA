@@ -6,11 +6,33 @@ Before this file existed, FailureType was declared but nothing actually
 produced one from a real Playwright exception — classify_playwright_error()
 was referenced in pseudo-code but never designed.
 
-SPRINT 2 SCOPE: only SELECTOR_NOT_FOUND is fully classified and routed
-downstream. DETACHED_FROM_DOM / NOT_VISIBLE / TIMEOUT_WAITING are defined
-here (so the enum doesn't need reshaping later) but Context Collector
-raises NotImplementedError for them until Sprint 6 — see LEARNINGS.md
-"Gap #4" for why this sequencing was a deliberate choice, not an oversight.
+SPRINT 2 SCOPE: only SELECTOR_NOT_FOUND was fully classified and routed
+downstream. DETACHED_FROM_DOM / NOT_VISIBLE / TIMEOUT_WAITING were defined
+here (so the enum didn't need reshaping later) but Context Collector
+raised NotImplementedError for them — see LEARNINGS.md "Gap #4" for why
+this sequencing was a deliberate choice, not an oversight.
+
+SPRINT 6A SCOPE (this change): DETACHED_FROM_DOM gets a real classification
+branch — CLASSIFIER ONLY, per the Sprint 6A exit criterion in LEARNINGS.md
+("Sprint 6 (pre-coding)"). Context Collector still raises NotImplementedError
+for DETACHED_FROM_DOM; that's Sprint 6B's job. This file's only
+responsibility this sub-sprint is: given a real Playwright error produced
+by chaos_app's componentRemount.jsx (TIMEOUT trigger, see LEARNINGS.md
+"Sprint 6"), correctly return FailureType.DETACHED_FROM_DOM instead of
+UNKNOWN or a false-positive SELECTOR_NOT_FOUND.
+
+IMPORTANT EPISTEMIC NOTE (read before trusting this blindly): the
+SELECTOR_NOT_FOUND branch below was corrected TWICE after real end-to-end
+runs revealed message shapes that hand-crafted unit test samples didn't
+anticipate (see LEARNINGS.md Sprint 4 — the fill() vs click() "to be
+visible" gap). The DETACHED_FROM_DOM branch added in Sprint 6A has NOT
+yet been through that same live-run correction cycle — the message
+substrings below are inferred from Playwright's public documentation of
+its own actionability-check wording, not yet confirmed against a real
+`pytest tests/chaos/ -m chaos -s` run against componentRemount.jsx. Treat
+this branch as "best guess, pending live verification" until LEARNINGS.md
+has a Sprint 6A "Verified live" entry saying otherwise — same posture the
+project took with every prior classifier change.
 """
 from enum import Enum
 
@@ -21,7 +43,7 @@ class FailureType(Enum):
     """
     Categorizes WHY a Playwright action failed — not just THAT it failed.
     Each value needs different collected context and a different LLM
-    prompt strategy (Sprint 3): "propose a new selector" is a different
+    prompt strategy (Sprint 3/6): "propose a new selector" is a different
     task than "propose a wait/retry strategy."
     """
     SELECTOR_NOT_FOUND = "selector_not_found"   # element never existed with this selector
@@ -29,6 +51,28 @@ class FailureType(Enum):
     NOT_VISIBLE = "not_visible"                  # exists in DOM, but not visible (spinner/overlay)
     TIMEOUT_WAITING = "timeout_waiting"           # never reached an actionable state
     UNKNOWN = "unknown"                           # classifier couldn't determine a type
+
+
+# Substrings Playwright's own actionability-check logging uses when an
+# action's target element was detached from the DOM mid-action — as
+# opposed to never having existed at all (SELECTOR_NOT_FOUND). Checked
+# BEFORE the generic "waiting for locator" substring below, because a
+# detached-mid-action failure's message ALSO contains "waiting for
+# locator" (Playwright logs that for every action) — the "not attached"
+# phrase is the more specific signal and must win when both are present.
+#
+# Sprint 6A note: these substrings are Playwright's documented
+# actionability-check vocabulary, not yet confirmed against a captured
+# real error message from a live componentRemount.jsx run. If a live run
+# produces a message shape not covered here, that is expected to surface
+# the same way Sprint 4's fill()/click() gap did — fix here, add a
+# regression test, log it in LEARNINGS.md. Not a design flaw to avoid,
+# just the next expected step in this project's established pattern.
+_DETACHED_SUBSTRINGS = (
+    "not attached to the dom",
+    "element is not attached",
+    "was detached from the dom",
+)
 
 
 def classify_playwright_error(error: Exception, page=None, selector: str = None) -> FailureType:
@@ -42,14 +86,17 @@ def classify_playwright_error(error: Exception, page=None, selector: str = None)
     dom_mutation) actually produce, and the one the rest of Sprint 2-5
     is built around end-to-end.
 
-    Sprint 6 TODO: DETACHED_FROM_DOM and NOT_VISIBLE classification
-    needs more than the exception alone — likely requires probing the
-    page at failure time (e.g. "does this exact node still exist
-    anywhere in the DOM, just detached from its old parent?" vs
-    "does an element matching this selector exist, but with
-    visibility:hidden or zero size?"). That probe doesn't exist yet,
-    so this function can't safely return those values today even
-    though the enum already has room for them.
+    Sprint 6A: adds DETACHED_FROM_DOM classification, using message
+    substrings rather than a DOM probe — see module docstring for why
+    this is flagged as pending live verification, same epistemic caution
+    every prior classifier change in this file has needed.
+
+    Sprint 6/future TODO: NOT_VISIBLE classification needs more than the
+    exception alone — likely requires probing the page at failure time
+    (e.g. "does an element matching this selector exist, but with
+    visibility:hidden or zero size?"). That probe doesn't exist yet, so
+    this function can't safely return that value today even though the
+    enum already has room for it.
     """
     if not isinstance(error, PlaywrightTimeout):
         # Sprint 2 only knows how to reason about Playwright's own
@@ -59,6 +106,15 @@ def classify_playwright_error(error: Exception, page=None, selector: str = None)
         return FailureType.UNKNOWN
 
     message = str(error).lower()
+
+    # Checked FIRST, before the generic "waiting for locator" check
+    # below — see _DETACHED_SUBSTRINGS docstring for why this ordering
+    # matters. A message containing one of these phrases means the
+    # element existed and was found at some point during the action,
+    # then disappeared mid-action — categorically different from
+    # SELECTOR_NOT_FOUND, where nothing ever matched at all.
+    if any(substr in message for substr in _DETACHED_SUBSTRINGS):
+        return FailureType.DETACHED_FROM_DOM
 
     # Playwright's timeout message differs depending on WHY waiting for
     # the locator failed, AND depending on which action was being

@@ -19,15 +19,24 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   `NotImplementedError` by design. Confirmed via hands-on Salesforce
   Lightning experience that these are likely MORE common in real
   enterprise apps than selector renaming — this is a required future
-  sprint, not a nice-to-have. **Sprint 6 (in progress, pre-coding
-  decisions made) closes this gap for `DETACHED_FROM_DOM` only** — see
-  the Sprint 6 entry below. `NOT_VISIBLE` and `TIMEOUT_WAITING` remain
-  `NotImplementedError` until their own future sprints.
-- **Chaos App has no mechanism simulating component remount /
-  detach-mid-action.** Needed before `DETACHED_FROM_DOM` handling can
-  even be tested, let alone implemented. **Scoped into Sprint 6A** as
-  `chaos_app/src/chaos/componentRemount.jsx` — not yet built as of this
-  writing (pre-coding decisions only, no Sprint 6 code merged yet).
+  sprint, not a nice-to-have. **Sprint 6A (implemented, pending live
+  verification) extended the CLASSIFIER only** — `classify_playwright_error()`
+  now returns `DETACHED_FROM_DOM` for a matching Playwright error.
+  `ContextCollector` still raises `NotImplementedError` for it — that's
+  Sprint 6B's scope, not yet built. `NOT_VISIBLE` and `TIMEOUT_WAITING`
+  remain fully unaddressed, deferred until 6A-6D are verified.
+- **Chaos App's component remount mechanism exists but is unverified
+  against a real live run.** `chaos_app/src/chaos/componentRemount.jsx`
+  (Sprint 6A) implements `RemountTrigger.TIMEOUT` only — a single
+  component (LoginForm's submit button) is force-remounted on a
+  repeating 200-800ms timer via a `key` change. `STATE_CHANGE` and
+  `NETWORK_RESPONSE` triggers are declared in the `RemountTrigger` enum
+  but throw immediately if requested — not implemented. The classifier's
+  `DETACHED_FROM_DOM` substring matches are inferred from Playwright's
+  documented actionability-check wording, not yet confirmed against a
+  captured real error message — see `LEARNINGS.md` "Sprint 6A" for the
+  full epistemic caveat. Do not treat this mechanism as production-tested
+  until a live run confirms it.
 - **Autonomous Mode is fully unimplemented and deliberately blocked.**
   `Healer.attempt_heal()` raises `NotImplementedError` if
   `HEALING_MODE=autonomous` — won't be unblocked until stop conditions
@@ -37,7 +46,7 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   Left here as-is as a record of the state at the time this limitation
   was first written; not a currently accurate limitation.)*
 
-## Scope boundary about to change (Sprint 6, pre-coding — not yet built)
+## Scope boundary about to change (Sprint 6B onward — decided, not yet built)
 
 - **`HealingProposal` is still the only provider return shape in the
   codebase today.** A `HealingAction` hierarchy (`SelectorReplacement`,

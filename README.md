@@ -36,7 +36,7 @@ rather than all at once:
 | Failure type | Status |
 |---|---|
 | `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
-| `detached_from_dom` — framework re-render mid-action | 🚧 In progress — architecture decided, implementation split into Sprint 6A-6D (see below) |
+| `detached_from_dom` — framework re-render mid-action | 🚧 In progress — classifier implemented (Sprint 6A, pending live verification); collector/prompt/healing land in 6B-6D (see below) |
 | `not_visible` — element exists but hidden/blocked | 🔜 Required, not yet built |
 | `timeout_waiting` — never reaches an actionable state | 🔜 Required, not yet built |
 
@@ -207,7 +207,7 @@ Switch via single env variable. No code changes.
 | Sprint 4  | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
 | Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
 | Sprint 6  | Failure type expansion — `detached_from_dom` (architecture decided; see 6A-6D below), `not_visible` and `timeout_waiting` deferred until 6A-6D verified | 🚧 In progress (pre-coding decisions made, implementation not started) |
-| Sprint 6A | `componentRemount.jsx` + classifier extended to recognize `DETACHED_FROM_DOM` — classifier-only, zero healing logic | ⏳ Planned |
+| Sprint 6A | `componentRemount.jsx` (TIMEOUT trigger only) + classifier extended to recognize `DETACHED_FROM_DOM` — classifier-only, zero healing logic | 🚧 Implemented, pending live verification |
 | Sprint 6B | `DetachedFromDomCollector` — verified against a live page | ⏳ Planned |
 | Sprint 6C | `detached_prompt.py` — verified to produce a parseable `RetryStrategy` against real Ollama output | ⏳ Planned |
 | Sprint 6D | `Healer` handles `RetryStrategy` end-to-end, both Safe and Autonomous Mode — Sprint 6 exit criterion | ⏳ Planned |

@@ -29,6 +29,13 @@ TODO): re-finding an element by outerHTML string match collides when two
 elements are structurally identical (e.g. TicketList's three rows). Sprint
 3 replaces this with a retained ElementHandle from the same evaluate()
 call instead of re-querying the DOM a second time.
+
+SPRINT 6 NOTE: this class is planned to become a thin router over
+BaseContextCollector subclasses (one per FailureType), per the Sprint 6
+pre-coding decision recorded in LEARNINGS.md — not yet implemented as of
+Sprint 6A, which is classifier-only scope. The SELECTOR_NOT_FOUND logic
+below is expected to move into collectors/selector_collector.py unchanged
+when that refactor lands (Sprint 6B or later), not to be rewritten.
 """
 import re
 
@@ -210,12 +217,17 @@ class ContextCollector:
         if failure_type == FailureType.SELECTOR_NOT_FOUND:
             return self._collect_selector_context(broken_selector, error, original_code, failure_type)
 
-        # Sprint 6 scope (see LEARNINGS.md "Gap #4" and the Sprint 6 spec
-        # for componentRemount.jsx). Explicit and loud, not a silent
-        # fallback that would produce misleading context.
+        # Sprint 6B scope for DETACHED_FROM_DOM specifically (see
+        # LEARNINGS.md "Gap #4", "Gap #12", and the Sprint 6 sub-sprint
+        # breakdown). Sprint 6A (this classifier's current state) is
+        # classifier-only, by design — zero collection/healing logic
+        # touched yet. NOT_VISIBLE / TIMEOUT_WAITING remain unscheduled
+        # until DETACHED_FROM_DOM is proven end-to-end. Explicit and
+        # loud, not a silent fallback that would produce misleading
+        # context.
         raise NotImplementedError(
             f"ContextCollector has no collection strategy for {failure_type.value} yet. "
-            f"Planned for Sprint 6 (Failure type expansion) — see LEARNINGS.md."
+            f"Planned for Sprint 6B (Failure type expansion — DETACHED_FROM_DOM) — see LEARNINGS.md."
         )
 
     def _collect_selector_context(
