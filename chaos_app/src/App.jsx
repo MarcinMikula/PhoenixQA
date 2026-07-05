@@ -30,7 +30,12 @@ function App() {
           <li>Level: {config.level}</li>
           <li>Mechanisms: {config.mechanisms.join(', ') || 'none'}</li>
           <li>Shadow DOM: {config.shadowDomEnabled ? 'enabled' : 'disabled'}</li>
-          <li>Component Remount (Sprint 6A, TIMEOUT trigger): {config.componentRemountEnabled ? 'enabled' : 'disabled'}</li>
+          <li>
+            Component Remount (Sprint 6A, TIMEOUT trigger): {config.componentRemountEnabled ? 'enabled' : 'disabled'}
+            {config.componentRemountEnabled && (config.componentRemountMinMs || config.componentRemountMaxMs)
+              ? ` (interval override: ${config.componentRemountMinMs ?? 200}-${config.componentRemountMaxMs ?? 800}ms)`
+              : ''}
+          </li>
         </ul>
       </div>
 
@@ -38,6 +43,8 @@ function App() {
         <LoginForm
           activeMechanisms={config.mechanisms}
           componentRemountEnabled={config.componentRemountEnabled}
+          componentRemountMinMs={config.componentRemountMinMs}
+          componentRemountMaxMs={config.componentRemountMaxMs}
         />
         <TicketList
           activeMechanisms={config.mechanisms}

@@ -13,11 +13,21 @@
 import { useMemo, useState } from 'react'
 import { rotateSelector } from '../chaos/selectorRotation'
 import { DomMutationWrapper } from '../chaos/domMutation'
+import {
+  ComponentRemountWrapper,
+  RemountTrigger,
+} from '../chaos/componentRemount'
 
 const VALID_USERNAME = 'admin'
 const VALID_PASSWORD = 'secret'
 
-export function LoginForm({ activeMechanisms }) {
+export function LoginForm({
+  activeMechanisms,
+  componentRemountEnabled = false,
+  componentRemountMinMs,
+  componentRemountMaxMs,
+  componentRemountTrigger,
+}) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -41,6 +51,7 @@ export function LoginForm({ activeMechanisms }) {
 
   function handleSubmit(e) {
     e.preventDefault()
+
     if (username === VALID_USERNAME && password === VALID_PASSWORD) {
       setError('')
       setLoggedIn(true)
@@ -80,11 +91,22 @@ export function LoginForm({ activeMechanisms }) {
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <button type="submit" data-testid={testIds.submit}>
-          Log in
-        </button>
+        <ComponentRemountWrapper
+          active={componentRemountEnabled}
+          trigger={componentRemountTrigger || RemountTrigger.TIMEOUT}
+          minDelayMs={componentRemountMinMs}
+          maxDelayMs={componentRemountMaxMs}
+        >
+          <button type="submit" data-testid={testIds.submit}>
+            Log in
+          </button>
+        </ComponentRemountWrapper>
 
-        {error && <p data-testid={testIds.error}>{error}</p>}
+        {error && (
+          <p data-testid={testIds.error}>
+            {error}
+          </p>
+        )}
       </form>
     </DomMutationWrapper>
   )

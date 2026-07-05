@@ -1931,11 +1931,220 @@ the loop on that fix — implemented, unit tested, and now also confirmed
 live, same three-stage verification bar every other fix in this project
 has needed.
 
+### Sprint 6A — mechanism override, replacing a rejected "NONE" level
+
+Attempting to actually reproduce `DETACHED_FROM_DOM` live surfaced a
+real, structural problem, not just a timing-luck problem: `ChaosLoginPage`'s
+`BTN_SUBMIT` selector is unrotated, but `selector_rotation` is baked into
+EVERY `CHAOS_LEVELS` entry (`LOW` already includes it; `MEDIUM`/`HIGH`
+only add to it). That means the very first `click()` on the login button
+always fails with `SELECTOR_NOT_FOUND` — the element is never live long
+enough under a matching selector for `componentRemount.jsx` to ever
+detach anything from it. `DETACHED_FROM_DOM` could, at best, only appear
+on the RETRY click after a successful heal — a narrow, low-probability
+window, not a reliable reproduction path. Same "isolate one variable"
+instinct that shaped Shadow DOM's decoupling in Sprint 1: right now
+there's no way to run `component_remount` WITHOUT `selector_rotation`
+also being active and dominating the failure.
+
+**First proposal: a `NONE` chaos level (zero mechanisms).** Rejected in
+direct discussion, for a sharp reason: it conflates two different
+things that only looked similar. A chaos level is meant to name an
+official, cumulative research scenario (`LOW`/`MEDIUM`/`HIGH`, feeding
+the Sprint 7/8 benchmark table) — "zero chaos" is a legitimate scenario
+in that sense, but "let me isolate one specific mechanism for
+development verification" is a completely different need that just
+happens to also want zero mechanisms IN THIS ONE CASE. `NONE` would only
+solve isolating `component_remount` specifically. The moment a future
+need arises — e.g. "Shadow DOM + Component Remount, without DOM
+Mutation" — `NONE` provides nothing; a new named level would have to be
+invented for every such combination, which is exactly the kind of
+special-casing `CHAOS_LEVELS`'s dict design was built in Sprint 1 to
+avoid.
+
+**Resolution: mechanism overrides, not a new level.** Clarified two
+classes of mechanism, formalized in `chaosConfig.js`'s module docstring:
+
+- **Core mechanisms** (`selector_rotation`, `dom_mutation`, `async_delay`)
+  — the ones `CHAOS_LEVELS` cumulatively ladders through. This class and
+  the ladder itself are UNCHANGED by this decision.
+- **Independent mechanisms** (`shadow_dom`, `component_remount`, and
+  future additions) — already handled by their own flags since Sprint 1
+  (Shadow DOM) and Sprint 6A (Component Remount).
+
+The actual gap was that core mechanisms had no equivalent to "force this
+one off/on regardless of level." Added `applyMechanismOverrides()` +
+optional per-mechanism env vars (`VITE_OVERRIDE_SELECTOR_ROTATION`,
+`VITE_OVERRIDE_DOM_MUTATION`, `VITE_OVERRIDE_ASYNC_DELAY`) — each
+strictly optional, absent means "use whatever the level already
+implies," so every existing Sprint 1-6 run is completely unaffected.
+This generalizes to ANY future combination without inventing new named
+levels: `LOW + component_remount, rotation forced off` today,
+`MEDIUM + shadow_dom, dom_mutation forced off` next month, without
+touching `CHAOS_LEVELS` itself either time.
+
+**Explicitly scoped as development/verification-only, never for the
+official benchmark.** `CHAOS_LEVELS`'s three named scenarios remain the
+only thing Sprint 7/8's benchmark runner should ever configure via plain
+`CHAOS_LEVEL` — overrides exist so a human isolating one specific
+question during development doesn't need to invent a level for every
+such question, not so the benchmark gains a combinatorial explosion of
+level×override configurations to report on.
+
+**To verify `DETACHED_FROM_DOM` in isolation**, the recommended
+configuration is now:
+```bash
+# chaos_app/.env
+VITE_CHAOS_LEVEL=LOW
+VITE_OVERRIDE_SELECTOR_ROTATION=false
+VITE_COMPONENT_REMOUNT_ENABLED=true
+```
+This makes `LoginForm`'s `btn-login` selector stable (no rotation), so
+the very first `click()` actually acquires a live element — giving
+`componentRemount.jsx`'s repeating remount a real chance to detach it
+mid-action, rather than the click failing on `SELECTOR_NOT_FOUND` before
+any element was ever held at all.
+
+**Honest caveat, stated up front rather than discovered by surprise
+later:** even with this isolation, Playwright's own actionability retry
+loop may frequently just re-resolve the (rotated-away-then-back... no,
+here: unrotated but remounted) element on its next check and succeed
+without ever producing a distinct "not attached" error — because
+`click()`'s actual dispatch window is only a few milliseconds wide
+against a 200-800ms remount interval. A `DETACHED_FROM_DOM`-shaped
+failure may require several runs to actually observe, or may turn out to
+need a shorter remount interval to reproduce reliably during
+verification specifically (as opposed to the interval chosen for
+*realism* in the mechanism's normal/default use). This is itself a
+legitimate, useful empirical question for the live verification session
+to answer — not a design flaw to pre-emptively "fix" before ever
+observing real behavior.
+
+### Naming/philosophy note (flagged for later, not an immediate change)
+
+Raised in the same discussion, worth recording even though it isn't
+actionable yet: `CHAOS_LEVEL` originally meant "how much chaos" (Sprint
+1's LOW→HIGH difficulty ladder). Between Shadow DOM (Sprint 1),
+Component Remount (Sprint 6A), and now mechanism overrides, it's
+increasingly describing "which named research scenario is configured"
+rather than a literal difficulty gradient. Not urgent to rename or
+restructure anything now — `LOW`/`MEDIUM`/`HIGH` still read naturally
+and the Sprint 7/8 benchmark table depends on that naming being stable —
+but worth revisiting the framing in documentation (not the code) once
+enough independent mechanisms exist that "level" no longer intuitively
+describes what's actually being configured. A candidate future framing:
+`CHAOS_LEVEL` as a "predefined research scenario," with independent
+mechanisms and overrides as orthogonal lenses layered on top — matching
+how the project has actually evolved from a self-healing framework demo
+into an experimentation platform. Filed as a documentation consideration
+for a future sprint, not a Sprint 6 action item.
+
+### Confirmed: `LOW + selector_rotation forced off + component_remount` isolation works as designed — but a full run passed with an empty log
+
+First run with the isolation configuration above (`LOW`,
+`VITE_OVERRIDE_SELECTOR_ROTATION=false`, `VITE_COMPONENT_REMOUNT_ENABLED=true`)
+completed in 12s with both tests PASSING and `healing_decisions.log`
+completely empty. Not a bug in `decision_logger.py` (already unit
+tested, and pure file I/O with no branching that could silently no-op) —
+`log_decision()` is only ever called from inside `Healer.attempt_heal()`,
+which is only ever called when `click()`/`fill()` actually raises a
+`PlaywrightTimeout` in the first place. With `selector_rotation` off,
+`username`/`password`/`btn-login` are stable selectors, so the very
+first `click()`/`fill()` succeeded every time — the Healer was never
+invoked at all, so there was nothing to log. The dramatically shorter
+run time (12s vs. the usual ~190s) is itself confirming evidence: no
+timeouts occurred anywhere in the run.
+
+This also confirms the hypothesis flagged as a caveat when the isolation
+config was designed: `component_remount`'s default 200-800ms interval
+did not happen to collide with either test's click/fill window in this
+particular run. Not surprising — a `click()`'s actual dispatch is only a
+few milliseconds wide against an interval two orders of magnitude
+larger, so a genuine collision within one run is a real possibility, not
+a certainty.
+
+**Made the interval configurable rather than re-running blindly or
+hand-editing the constant.** `ComponentRemountWrapper` now accepts
+optional `minDelayMs`/`maxDelayMs` props (default unchanged: 200-800ms,
+the "realistic" range), threaded through from two new optional env vars,
+`VITE_COMPONENT_REMOUNT_MIN_MS` / `VITE_COMPONENT_REMOUNT_MAX_MS`. Same
+philosophy as every other tunable in this project (`AutonomousPolicy`,
+chaos levels, mechanism overrides): a hardcoded constant that someone
+would otherwise have to edit and revert by hand for a one-off
+verification session becomes a documented, optional, reversible env
+var instead. Setting both to something like `50`/`150` for a
+verification session makes a collision far more likely within a single
+run, without touching the mechanism's realistic defaults for normal use.
+
+### Sprint 6A — deterministic MOUSEDOWN trigger, replacing the "tighten the timer" instinct
+
+After confirming the isolation config worked exactly as designed
+(`LOW` + `selector_rotation` forced off + `component_remount` on) but a
+full test run passed cleanly in 2.52s even with a 50-150ms interval, the
+obvious next instinct — "try an even shorter interval, e.g. 10-30ms" —
+was raised and deliberately rejected in favor of a different approach,
+for a reason worth recording precisely.
+
+**Why not just tighten the interval further:** any timer-based interval,
+however short, keeps the question probabilistic — "did the random timer
+happen to fire during the click's narrow dispatch window?" A pass at
+10-30ms is ambiguous evidence: it could mean Playwright is genuinely
+resilient to this failure mode, or it could simply mean this run didn't
+get unlucky. A failure at 10-30ms would be equally ambiguous in the
+other direction. This is structurally the same problem as papering over
+a flaky test by increasing a `sleep()` until it stops failing — it can
+work, but it teaches you almost nothing about WHY, and doesn't reliably
+replicate. Same "isolate one variable" instinct that has recurred all
+sprint (Shadow DOM decoupling in Sprint 1, the rejected `NONE` level,
+mechanism overrides): the actual variable worth isolating here isn't
+"how short can the interval get," it's "what happens if the element is
+replaced at the EXACT moment an interaction begins" — a fundamentally
+different, answerable question.
+
+**Decision: add `RemountTrigger.MOUSEDOWN`**, a deterministic trigger
+alongside the existing `RemountTrigger.TIMEOUT`. Implementation attaches
+a native `mousedown` handler directly to the wrapped element and bumps
+the remount `key` synchronously the instant that event fires — no
+interval, no randomness. React 18 flushes discrete event updates (like
+`mousedown`) before the browser dispatches the next native event in the
+same user gesture (`mouseup`, `click`), so by the time Playwright's click
+sequence reaches those later events, the OLD DOM node should already be
+torn down and a new one mounted in its place. This turns "will a random
+timer ever collide with a click?" into "what specifically happens when
+detachment occurs at the most adversarial possible moment?" — a
+deterministic experiment instead of a probabilistic one.
+
+**A genuinely useful technical hypothesis this also tests:** Playwright's
+`click()` dispatches low-level mouse events via CDP at specific page
+COORDINATES (like a real user), rather than holding a persistent
+reference to a specific DOM node the way e.g. Selenium's `WebElement`
+does. If a replacement button renders at the same screen position, the
+browser's native hit-testing may simply deliver `mouseup`/`click` to the
+NEW node without Playwright ever noticing a swap happened — which would
+be a plausible explanation for why the probabilistic `TIMEOUT` runs
+haven't produced a visible failure so far. `RemountTrigger.MOUSEDOWN`
+gives this hypothesis a fair, deterministic test.
+
+**Explicitly framed as a genuine finding either way, decided before
+seeing the result:** if `MOUSEDOWN` reliably produces a
+`DETACHED_FROM_DOM`-classifiable Playwright error, Sprint 6B has a real,
+reproducible case to build `DetachedFromDomCollector` against. If it does
+NOT — even at this maximally adversarial, zero-timing-luck setting —
+that is not a failed sub-sprint. It would mean Playwright's
+actionability/dispatch pipeline is substantially more resilient to
+React `key`-based remounts than the original mechanism design assumed,
+and that future Chaos App mechanisms simulating this failure family
+should target lower-level DOM mutation or raw browser event timing
+rather than a React-level remount. Chaos App exists to simulate real
+failure CLASSES, not to force one specific exception message out of
+Playwright at any cost — discovering a limit of this particular
+simulation approach is exactly the kind of result this project's
+empirical, measure-first philosophy is supposed to produce, not a result
+to keep pushing against.
+
 ---
 
 ## TODO (future sprints)
-
-
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
 - Sprint 1: shadow_dom is an independent flag (SHADOW_DOM_ENABLED), not part of CHAOS_LEVELS — combinable with any level
