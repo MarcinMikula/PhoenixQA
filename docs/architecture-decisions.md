@@ -175,6 +175,25 @@ this file is a map, not a copy.
   into one generic "AI fixes it" mechanism. More specialized components
   than shared logic, after Sprint 6, is read as a sign the architecture
   fits the problem — not as premature complexity.
+- **`DETACHED_FROM_DOM` deprioritized for Sprint 6B onward after empirical
+  falsification (Sprint 6A), not removed from the architecture.** Four
+  escalating reproduction attempts (200-800ms random interval down to a
+  deterministic `mousedown`-triggered remount with zero timing
+  randomness) all failed to reproduce the failure against Playwright's
+  `Locator` API. Root cause confirmed via Playwright's own docs and
+  issue tracker: `Locator.click()` retries automatically on mid-action
+  detachment — the failure class Selenium/`ElementHandle`-style
+  automation is vulnerable to, and the one Sprint 2's original decision
+  was anchored on, doesn't reach `BasePage` the way it does in
+  reference-holding automation. Real "not attached" errors that DO occur
+  in `Locator`-based suites trace to patterns (ElementHandle misuse, a
+  narrow `check()`/`uncheck()` edge case, a sub-frame actionability race)
+  that are fixed via locator-structure changes in practice, not selector
+  or retry healing. Decisions above (action-recovery reframing,
+  polymorphic collector, split prompts, `HealingAction` hierarchy) are
+  unaffected — they generalize across failure types; only which failure
+  type Sprint 6B-D actually build against is redirected. See
+  `LEARNINGS.md` Sprint 6A conclusion and `docs/gaps.md` Gap #4.
 
 ## Documentation structure
 
