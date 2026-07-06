@@ -30,7 +30,7 @@ rather than all at once:
 | Failure type | Status |
 |---|---|
 | `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
-| `detached_from_dom` — framework re-render mid-action | 🔬 Investigated (Sprint 6A) — reproduction empirically falsified for `Locator`-based automation across four escalating attempts; deprioritized, see `docs/gaps.md` Gap #4 |
+| `detached_from_dom` — framework re-render mid-action | 🔬 Investigated (Sprint 6A) — no reproduction found for `Locator`-based automation across four escalating attempts; deprioritized based on current evidence, not proven impossible — see `docs/gaps.md` Gap #4 |
 | `not_visible` — element exists but hidden/blocked | 🔜 Candidate for the next vertical slice — not yet started |
 | `timeout_waiting` — never reaches an actionable state | 🔜 Candidate for the next vertical slice — not yet started |
 
@@ -48,16 +48,17 @@ PhoenixQA to handle. Sprint 6A tested that assumption directly — a real
 reproduction mechanism (`componentRemount.jsx`) was built and run across
 four escalating configurations, ending with a deterministic,
 zero-timing-luck trigger. The consistent finding: no observable
-`DETACHED_FROM_DOM` failure, at any setting. Research into Playwright's
-own documentation and issue tracker explained why — `Locator`-based
-actions (all `BasePage` ever uses; never `ElementHandle`) retry
-automatically on mid-action detachment, architecturally absorbing most
-of the failure class Selenium-style automation is vulnerable to. This
-result changed the roadmap, not just a footnote: it's the project's
-first finding about the tool it's built on, produced by a controlled
-experiment rather than assumed. See `LEARNINGS.md` "Sprint 6A conclusion"
-for the full hypothesis → experiment → finding → decision trail, sources,
-and what it means for the project's remaining scope.
+`DETACHED_FROM_DOM` failure, at any setting, for this project's specific
+interaction pattern. Research into Playwright's own documentation and
+issue tracker offers a likely explanation, not just a coincidence —
+`Locator`-based actions (all `BasePage` ever uses; never `ElementHandle`)
+are documented to retry automatically on mid-action detachment, which
+would plausibly absorb much of the failure class Selenium-style
+automation is vulnerable to. This is deliberately framed as evidence
+supporting a deprioritization, not proof that the failure type doesn't
+exist — see `LEARNINGS.md` "Sprint 6A conclusion" for the precise scope
+of the claim, the full hypothesis → experiment → finding → decision
+trail, sources, and what it means for the project's remaining scope.
 
 **Important framing shift for the remaining failure types (Gap #12):**
 for `selector_not_found`, the selector itself is what's broken, and the
@@ -76,6 +77,14 @@ integration, end-to-end behavior against a real LLM, regression
 benchmarking of healing effectiveness, and non-functional resilience to
 malformed model output — is laid out in
 [`docs/testing-strategy.md`](docs/testing-strategy.md).
+
+**The open empirical questions driving the project's direction** — does
+an LLM meaningfully outperform a cheap heuristic, which failure types
+actually justify LLM-based healing, is model confidence a reliable
+proxy for correctness, and others — are collected in one place in
+[`docs/research_hypotheses.md`](docs/research_hypotheses.md), separate
+from `docs/gaps.md`'s architectural TODOs: a gap is something to build,
+a hypothesis is something to find out.
 
 ---
 
@@ -175,7 +184,8 @@ PhoenixQA/
 │   ├── architecture-decisions.md
 │   ├── known-limitations.md
 │   ├── future-ideas.md
-│   └── testing-strategy.md  # unit/integration/e2e/regression-benchmark/non-functional plan + actual state
+│   ├── testing-strategy.md  # unit/integration/e2e/regression-benchmark/non-functional plan + actual state
+│   └── research_hypotheses.md  # open empirical questions the project is trying to answer, not just architectural gaps to fix
 ├── chaos_app/                # React/Vite — intentionally unstable test target
 │   └── src/chaos/            # selectorRotation, domMutation, asyncDelay, shadowDom, componentRemount (Sprint 6A)
 ├── phoenix/

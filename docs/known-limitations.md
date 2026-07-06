@@ -27,19 +27,25 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   `NOT_VISIBLE`/`TIMEOUT_WAITING` are now the better-evidenced candidates
   for the next collection strategy — which of the two is chosen is an
   open decision.
-- **Chaos App's component remount mechanism is verified live and does
+- **Chaos App's component remount mechanism is verified live and did
   NOT reproduce `DETACHED_FROM_DOM` against `Locator`-based
-  interactions.** `chaos_app/src/chaos/componentRemount.jsx` (Sprint 6A)
-  was tested across four escalating configurations — a 200-800ms random
+  interactions in four escalating attempts.** `chaos_app/src/chaos/
+  componentRemount.jsx` (Sprint 6A) was tested with a 200-800ms random
   interval, tightened to 100-300ms, then to 10-30ms, then finally a
   deterministic `mousedown`-triggered remount with zero timing
-  randomness — and none produced a classifiable failure. This is now
-  understood as a structural property of Playwright's `Locator` API
-  (automatic retry on mid-action detachment, confirmed via Playwright's
-  own documentation and issue tracker), not a mechanism design flaw —
-  see `LEARNINGS.md` "Sprint 6A conclusion" for the full investigation
-  and sources. Both `RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN`
-  are implemented and verified not to reproduce the target failure;
+  randomness — and none produced a classifiable failure. The most
+  plausible explanation, consistent with Playwright's own documentation
+  and issue tracker (`Locator.click()` is documented to retry
+  automatically on mid-action detachment), is that this project's
+  specific interaction pattern doesn't reach the failure the mechanism
+  was built to simulate — not that the mechanism itself is broken. This
+  is scoped deliberately: it isn't a claim that `Locator` is immune to
+  detachment failures under every version or interaction shape, only
+  that four increasingly aggressive attempts against this codebase's
+  actual usage didn't produce one — see `LEARNINGS.md` "Sprint 6A
+  conclusion" for the full investigation and sources. Both
+  `RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN` are
+  implemented and verified not to reproduce the target failure;
   `RemountTrigger.STATE_CHANGE`/`NETWORK_RESPONSE` remain declared but
   unimplemented, and are not currently planned to be pursued given this
   result. The classifier's `DETACHED_FROM_DOM` substring matches remain

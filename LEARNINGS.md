@@ -16,6 +16,7 @@ indexes in `docs/`:
 - [`docs/known-limitations.md`](docs/known-limitations.md) — what's deliberately incomplete or fragile right now
 - [`docs/future-ideas.md`](docs/future-ideas.md) — brainstormed possibilities, deliberately deferred
 - [`docs/testing-strategy.md`](docs/testing-strategy.md) — quality strategy for PhoenixQA itself: unit/integration/e2e/regression-benchmark/non-functional, plan vs actual state
+- [`docs/research_hypotheses.md`](docs/research_hypotheses.md) — the project's open empirical questions in one place (does an LLM outperform a heuristic, is confidence correlated with correctness, etc.), each pointing back to where it was raised and where it stands
 
 Each index entry is a short summary + pointer back here — full reasoning
 always lives in this file, never duplicated.
@@ -1705,7 +1706,22 @@ a well-fitted architecture, not over-engineering.
 
 ## Sprint 6A — component remount mechanism + classifier extension (implemented, pending live verification)
 
-### Design refinement from direct discussion: remount CAUSE, not just remount EXISTENCE
+**Retrofit note:** this sprint's entries were written chronologically as
+the work happened, mixing decision/implementation/verification/
+conclusion/follow-up in the order conversations actually occurred — the
+sprint ran long enough (four escalating experiments, two unrelated bugs
+found along the way) that this is now the first entry worth applying a
+stricter structural convention to, going forward. Subsection headers
+below are tagged with `[Decision]` / `[Implementation]` / `[Verification]`
+/ `[Conclusion]` / `[Follow-up]` as a light retrofit — signposting only,
+no prose rewritten — so the phase of each entry is scannable without
+reading it top to bottom. This tagging convention applies to **new**
+sprint entries from here on; the rest of this file's history is
+deliberately left as originally written (see this file's intro: the
+chronological journal shows the actual thinking process, not a cleaned-up
+version of it).
+
+### [Decision] Design refinement from direct discussion: remount CAUSE, not just remount EXISTENCE
 
 Before writing `componentRemount.jsx`, the initial one-size-fits-all "chaos
 timer" idea was refined into something more useful scientifically. Real
@@ -1737,7 +1753,7 @@ trigger throws immediately and loudly (mirrors the Python-side
 `NotImplementedError` convention already used in `context_collector.py`
 and `failure_classifier.py`) rather than silently no-op'ing.
 
-### Design refinement: remount ONE component, not the whole form
+### [Decision] Design refinement: remount ONE component, not the whole form
 
 A second refinement from the same discussion: remounting an entire
 `<form>` would be a much cruder simulation than what real frameworks
@@ -1762,7 +1778,7 @@ Playwright action. A repeating remount both matches real re-render loops
 live test run actually reproduces the target failure within a normal
 test timeout window.
 
-### Decision: target the login submit button, continuing the same research story
+### [Decision] Target the login submit button, continuing the same research story
 
 Consistent with the project's established pattern of changing one
 variable at a time (Sprint 2's "prove SELECTOR_NOT_FOUND fully before
@@ -1786,7 +1802,7 @@ a different failure family entirely, combinable with any level (e.g.
 `HIGH + component_remount_enabled` is a valid, meaningful combination
 once Sprint 7's benchmark runner exists to actually run it).
 
-### Implementation: classifier extended, ContextCollector untouched (as scoped)
+### [Implementation] Classifier extended, ContextCollector untouched (as scoped)
 
 `classify_playwright_error()` gained a new check for
 `DETACHED_FROM_DOM`, based on substring matches against Playwright's
@@ -1830,7 +1846,7 @@ on both sides. Not yet run as of this entry. Next concrete step before
 Sprint 6A is considered closed — same discipline as every prior sprint's
 "built and unit tested" vs. "verified live" distinction.
 
-### Bug found during first live test run after Sprint 6A changes: BasePage never actually caught Healer's decline exceptions
+### [Verification] Bug found during first live test run after Sprint 6A changes: BasePage never actually caught Healer's decline exceptions
 
 First `python -m pytest tests/chaos/ -m chaos -s` run after copying the
 Sprint 6A files in produced a confusing failure — NOT related to
@@ -1904,7 +1920,7 @@ red test run can be carrying more than one finding at once, and each one
 deserves its own diagnosis rather than being attributed to whatever
 change was most recent.
 
-### Recurring pattern confirmed: `chaos_app/.env` didn't pick up the new flag either
+### [Verification] Recurring pattern confirmed: `chaos_app/.env` didn't pick up the new flag either
 
 Same live-verification session, same underlying cause as the root `.env`
 gotcha above, just on the Chaos App side this time: `VITE_COMPONENT_
@@ -1920,7 +1936,7 @@ always the first move before suspecting the code — this is now the
 second time this exact category of gotcha has appeared (Sprint 5:
 `OLLAMA_MODEL`/`HEALING_MODE`; Sprint 6A: `VITE_COMPONENT_REMOUNT_ENABLED`).
 
-### Verified live: BasePage correctly re-raises the original Playwright error
+### [Verification] BasePage correctly re-raises the original Playwright error, confirmed live
 
 The fix documented above was confirmed against a real run: pytest's
 `short test summary info` reported `playwright._impl._errors.TimeoutError`
@@ -1931,7 +1947,7 @@ the loop on that fix — implemented, unit tested, and now also confirmed
 live, same three-stage verification bar every other fix in this project
 has needed.
 
-### Sprint 6A — mechanism override, replacing a rejected "NONE" level
+### [Decision] Mechanism override, replacing a rejected "NONE" level
 
 Attempting to actually reproduce `DETACHED_FROM_DOM` live surfaced a
 real, structural problem, not just a timing-luck problem: `ChaosLoginPage`'s
@@ -2020,7 +2036,7 @@ legitimate, useful empirical question for the live verification session
 to answer — not a design flaw to pre-emptively "fix" before ever
 observing real behavior.
 
-### Naming/philosophy note (flagged for later, not an immediate change)
+### [Follow-up] Naming/philosophy note (flagged for later, not an immediate change)
 
 Raised in the same discussion, worth recording even though it isn't
 actionable yet: `CHAOS_LEVEL` originally meant "how much chaos" (Sprint
@@ -2039,7 +2055,7 @@ how the project has actually evolved from a self-healing framework demo
 into an experimentation platform. Filed as a documentation consideration
 for a future sprint, not a Sprint 6 action item.
 
-### Confirmed: `LOW + selector_rotation forced off + component_remount` isolation works as designed — but a full run passed with an empty log
+### [Verification] `LOW + selector_rotation forced off + component_remount` isolation works as designed — but a full run passed with an empty log
 
 First run with the isolation configuration above (`LOW`,
 `VITE_OVERRIDE_SELECTOR_ROTATION=false`, `VITE_COMPONENT_REMOUNT_ENABLED=true`)
@@ -2076,7 +2092,7 @@ var instead. Setting both to something like `50`/`150` for a
 verification session makes a collision far more likely within a single
 run, without touching the mechanism's realistic defaults for normal use.
 
-### Sprint 6A — deterministic MOUSEDOWN trigger, replacing the "tighten the timer" instinct
+### [Decision] + [Implementation] Deterministic MOUSEDOWN trigger, replacing the "tighten the timer" instinct
 
 After confirming the isolation config worked exactly as designed
 (`LOW` + `selector_rotation` forced off + `component_remount` on) but a
@@ -2142,7 +2158,7 @@ simulation approach is exactly the kind of result this project's
 empirical, measure-first philosophy is supposed to produce, not a result
 to keep pushing against.
 
-### Sprint 6A conclusion — hypothesis, experiment, finding, interpretation, decision
+### [Conclusion] Sprint 6A conclusion — hypothesis, experiment, finding, interpretation, decision
 
 Recorded deliberately in this structure rather than as a narrative of
 "what went wrong," because that's not what this is — it's the project's
@@ -2172,18 +2188,28 @@ the page exclusively through Playwright's `Locator` API — including at
 the deterministic, zero-timing-luck setting, which rules out "the
 random timer just never happened to collide" as an explanation.
 
-**Interpretation:** This is not a limitation of Chaos App's mechanism
-design — it's a consequence of Playwright's own architecture, confirmed
-via Playwright's official documentation and issue tracker rather than
-inferred from the null result alone. `Locator` transparently re-resolves
-elements on every actionability check and, per Playwright's own
-`Locator.click()` reference, simply retries the action if the target
-detaches mid-check — absorbing most of the situations that historically
-produced stale-element failures in Selenium/`ElementHandle`-style
-frameworks. `BasePage` is built entirely on `page.locator(...).click()/
+**Interpretation:** Chaos App's mechanism design is not the likely
+explanation — four independent, increasingly aggressive attempts,
+ending in a deterministic zero-timing-luck trigger, is a lot of surface
+area for a mechanism bug to hide in without ever once producing the
+target error. A more precise explanation is available directly from
+Playwright's own documentation: `Locator` re-resolves elements on every
+actionability check, and per Playwright's own `Locator.click()`
+reference, the action is simply retried if the target detaches
+mid-check. `BasePage` is built entirely on `page.locator(...).click()/
 .fill()`, never on `ElementHandle`/`page.$()`, so the exact failure
 class Sprint 2's original design was anchored on targets a
 reference-holding API this codebase never uses in the first place.
+
+**Scope of this claim, stated precisely rather than generally:** this
+result says PhoenixQA's specific interaction pattern (`Locator.click()`/
+`.fill()` against a single remounted component, tested up to a
+deterministic worst case) did not produce `DETACHED_FROM_DOM` in four
+attempts. It does not claim `Locator` is immune to detachment failures
+in general, under every Playwright version or interaction shape — see
+the real counter-examples below, which is exactly why this is filed as
+"deprioritized based on current evidence," not "resolved" or "proven
+impossible."
 
 Real "Element is not attached to the DOM" errors DO occur in
 `Locator`-based Playwright suites, but the research surfaced three
@@ -2211,9 +2237,10 @@ proposes fixes:
 
 **Decision:** `DETACHED_FROM_DOM` remains a real Playwright failure
 type, but the evidence indicates it is not a high-value engineering
-target for a `Locator`-based healing framework — both because it's
-architecturally rare in this context, and because the real occurrences
-that do exist aren't remediated in a shape the current `HealingAction`
+target for this project's `Locator`-based healing pipeline right now —
+both because four escalating attempts couldn't observe it in PhoenixQA's
+own interaction pattern, and because the real occurrences documented
+elsewhere aren't remediated in a shape the current `HealingAction`
 hierarchy models well. Sprint 6 therefore shifts focus toward failure
 types that occur naturally in `Locator` workflows (`NOT_VISIBLE`,
 `TIMEOUT_WAITING`) — `asyncDelay.js` already incidentally covers part of
@@ -2221,17 +2248,20 @@ types that occur naturally in `Locator` workflows (`NOT_VISIBLE`,
 actionability model (visible/enabled/stable/receiving-pointer-events) is
 documented to fail in exactly these two ways far more often than via
 detachment — while documenting this finding for future reconsideration,
-not discarding it. Which of the two becomes the actual next target is
-an open decision, not yet made — see TODO.
+not discarding it. **Deprioritized, not resolved** — the distinction
+matters: this is a call about where to spend engineering effort given
+current evidence, not a claim that the failure type has been eliminated
+or proven not to exist. Which of the two remaining candidates becomes
+the actual next target is an open decision, not yet made — see TODO.
 
 **What this does NOT invalidate:** Decisions #1-4 from Sprint 6's
 pre-coding gap analysis (action-recovery reframing, polymorphic
 `ContextCollector`, split prompt modules, the `HealingAction` hierarchy)
-remain architecturally sound regardless of which failure type Sprint 6B
-onward actually targets — they were designed to generalize across
-`DETACHED_FROM_DOM`/`NOT_VISIBLE`/`TIMEOUT_WAITING` collectively, not
-specifically around `DETACHED_FROM_DOM`. What changes is only WHICH of
-the three remaining failure types gets the next vertical slice.
+remain sound regardless of which failure type Sprint 6B onward actually
+targets — they were designed to generalize across `DETACHED_FROM_DOM`/
+`NOT_VISIBLE`/`TIMEOUT_WAITING` collectively, not specifically around
+`DETACHED_FROM_DOM`. What changes is only WHICH of the three remaining
+failure types gets the next vertical slice.
 
 Sources consulted:
 - https://playwright.dev/docs/api/class-locator
@@ -2246,7 +2276,7 @@ Sources consulted:
 See `docs/gaps.md` Gap #4 (updated) and `docs/architecture-decisions.md`
 for the resulting scope note.
 
-## Process reflection — Chaos App as a research platform, not just a test target (Sprint 6A)
+## [Follow-up] Process reflection — Chaos App as a research platform, not just a test target (Sprint 6A)
 
 Worth naming explicitly, the same way Sprint 5's "process reflection"
 named the project's inverted SDLC — this is an observation about how
@@ -2259,9 +2289,10 @@ PhoenixQA needed a failure to practice recovering from. Sprint 6A's
 `DETACHED_FROM_DOM` investigation inverted that relationship for the
 first time. `componentRemount.jsx` was built to test a hypothesis about
 *Playwright itself* — "does `Locator` behave the way Selenium-era
-intuition about stale elements assumes it does" — not to hand PhoenixQA
-a healing target. The result is a finding about the tool the whole
-project is built on top of, not about PhoenixQA's own code.
+intuition about stale elements assumes it does, for this project's
+specific interaction pattern" — not to hand PhoenixQA a healing target.
+The result is a finding about the tool the whole project is built on
+top of, not about PhoenixQA's own code.
 
 This matters beyond the one failure type. Early sprints followed a
 consistent shape: "PhoenixQA needs a mechanism, so build one." Sprint 6A
@@ -2296,9 +2327,9 @@ let the result choose the strategy, not the other way around.
 - Sprint 2: implement FailureType classification (classify_playwright_error) as the entry point to Context Collector — even though only SELECTOR_NOT_FOUND gets a full strategy this sprint, the routing structure must exist now
 - Sprint 2: implement weighted semantic scoring (tokenize broken_selector, score DOM elements by data-testid/aria-label/name/placeholder/id/textContent with weights 5/4/4/3/2/1), THEN closest(form/section) from best candidate, THEN shadow DOM check — not naive "first visible landmark"
 - Sprint 3: replace outerHTML re-matching with stored ElementHandle / unique ancestor path — identical elements currently collide
-- Sprint 3 or its own sprint (REQUIRED, not optional): implement DETACHED_FROM_DOM context-gathering strategy — most common real-world Salesforce/Lightning-style failure per hands-on experience. **Update (Sprint 6A): this specific failure type was empirically falsified for Locator-based automation — see "Sprint 6A conclusion" above. Superseded by the NOT_VISIBLE/TIMEOUT_WAITING TODO below.**
+- Sprint 3 or its own sprint (REQUIRED, not optional): implement DETACHED_FROM_DOM context-gathering strategy — most common real-world Salesforce/Lightning-style failure per hands-on experience. **Update (Sprint 6A): deprioritized after a controlled experiment found no reproduction against this project's Locator-based interaction pattern across 4 escalating attempts — see "Sprint 6A conclusion" above. Not proven impossible, not resolved — superseded in priority by the NOT_VISIBLE/TIMEOUT_WAITING TODO below.**
 - Sprint 3 or its own sprint (REQUIRED, not optional): implement NOT_VISIBLE and TIMEOUT_WAITING strategies
-- Future: Chaos App needs a new mechanism simulating component remount / detach-mid-action to actually test DETACHED_FROM_DOM handling — doesn't exist yet in current 4 mechanisms. **Update (Sprint 6A): built (`componentRemount.jsx`) and verified NOT to reproduce the target failure against Locator-based interactions across 4 escalating configurations — see "Sprint 6A conclusion" above.**
+- Future: Chaos App needs a new mechanism simulating component remount / detach-mid-action to actually test DETACHED_FROM_DOM handling — doesn't exist yet in current 4 mechanisms. **Update (Sprint 6A): built (`componentRemount.jsx`) and tested across 4 escalating configurations — did not reproduce the target failure against this project's Locator-based interactions. See "Sprint 6A conclusion" above.**
 - Before Sprint 6: resolve "healing correctness" definition (test passing ≠ fix is correct) before designing Healing History schema
 - Sprint 3: prompt template for selector healing — include element role, aria, surrounding context
 - Sprint 6: SQLite schema design — index by page_url + broken_selector for fast few-shot lookup
@@ -2313,8 +2344,8 @@ let the result choose the strategy, not the other way around.
 - Sprint 6 (NEW, pre-coding decision): `ContextCollector` becomes a router over `BaseContextCollector` subclasses (`phoenix/collector/collectors/`) — one per FailureType — instead of an if/elif ladder. `SELECTOR_NOT_FOUND` logic moves into `selector_collector.py` unchanged; this is a pure refactor with no behavior change for the existing path
 - Sprint 6 (NEW, pre-coding decision): `prompt_templates.py` splits into `phoenix/ai/prompts/` with one module per FailureType (`selector_prompt.py`, `detached_prompt.py`, ...), routed via a small `get_prompt_for(failure_type)` function
 - Sprint 6 (NEW, pre-coding decision, BLOCKING): introduce `HealingAction` ABC hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) to replace `HealingProposal` as the universal provider return shape. `ProviderResult.proposal` → `ProviderResult.action`. Requires updating `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`'s fallback path — same breadth as Sprint 5's HealingProposal→ProviderResult refactor
-- Sprint 6A: DONE — `componentRemount.jsx` (`RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN`, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. Live verification across 4 escalating configurations (200-800ms → 100-300ms → 10-30ms → deterministic mousedown) confirmed ZERO reproduction — falsified as a priority failure type for Locator-based automation. See "Sprint 6A conclusion."
+- Sprint 6A: DONE — `componentRemount.jsx` (`RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN`, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. Live verification across 4 escalating configurations (200-800ms → 100-300ms → 10-30ms → deterministic mousedown) found no reproduction — deprioritized as a target failure type for this project's Locator-based interaction pattern, not proven impossible in general. See "Sprint 6A conclusion."
 - Sprint 6A live run: DONE — fixed `BasePage.click()`/`fill()` not catching `HealingRejectedError`/`HealingLimitExceededError`/`HealingFailedError` and re-raising the original Playwright error, per `healer.py`'s documented (but previously unimplemented) contract. 6 new regression tests in `tests/unit/test_base_page.py`. Unrelated to `DETACHED_FROM_DOM` — found incidentally while attempting to verify Sprint 6A live
-- Sprint 6B/C/D as originally scoped (`DetachedFromDomCollector`, `detached_prompt.py`, `RetryStrategy` end-to-end): PAUSED — see "Sprint 6A conclusion" above. Four escalating reproduction attempts failed to produce `DETACHED_FROM_DOM` against Playwright's `Locator` API; root cause confirmed architectural (`Locator.click()` retries automatically on mid-action detachment), not a mechanism deficiency
+- Sprint 6B/C/D as originally scoped (`DetachedFromDomCollector`, `detached_prompt.py`, `RetryStrategy` end-to-end): PAUSED — see "Sprint 6A conclusion" above. Four escalating reproduction attempts found no `DETACHED_FROM_DOM` against this project's Locator-based interaction pattern; consistent with Playwright's documented auto-retry behavior on mid-action detachment, not confirmed as a mechanism deficiency in `componentRemount.jsx`
 - Sprint 6 (OPEN DECISION, blocking the next vertical slice): choose `NOT_VISIBLE` or `TIMEOUT_WAITING` as the redirected Sprint 6B target — both better-evidenced than `DETACHED_FROM_DOM` for `Locator`-based automation. `asyncDelay.js` already incidentally covers part of `NOT_VISIBLE`, unformalized since Sprint 2 — worth weighing as a starting-point advantage
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`

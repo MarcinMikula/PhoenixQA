@@ -175,25 +175,27 @@ this file is a map, not a copy.
   into one generic "AI fixes it" mechanism. More specialized components
   than shared logic, after Sprint 6, is read as a sign the architecture
   fits the problem — not as premature complexity.
-- **`DETACHED_FROM_DOM` deprioritized for Sprint 6B onward after empirical
-  falsification (Sprint 6A), not removed from the architecture.** Four
-  escalating reproduction attempts (200-800ms random interval down to a
-  deterministic `mousedown`-triggered remount with zero timing
-  randomness) all failed to reproduce the failure against Playwright's
-  `Locator` API. Root cause confirmed via Playwright's own docs and
-  issue tracker: `Locator.click()` retries automatically on mid-action
-  detachment — the failure class Selenium/`ElementHandle`-style
-  automation is vulnerable to, and the one Sprint 2's original decision
-  was anchored on, doesn't reach `BasePage` the way it does in
-  reference-holding automation. Real "not attached" errors that DO occur
-  in `Locator`-based suites trace to patterns (ElementHandle misuse, a
-  narrow `check()`/`uncheck()` edge case, a sub-frame actionability race)
-  that are fixed via locator-structure changes in practice, not selector
-  or retry healing. Decisions above (action-recovery reframing,
-  polymorphic collector, split prompts, `HealingAction` hierarchy) are
-  unaffected — they generalize across failure types; only which failure
-  type Sprint 6B-D actually build against is redirected. See
-  `LEARNINGS.md` Sprint 6A conclusion and `docs/gaps.md` Gap #4.
+- **`DETACHED_FROM_DOM` deprioritized for Sprint 6B onward after a
+  controlled experiment (Sprint 6A), not removed from the architecture,
+  and not proven impossible.** Four escalating reproduction attempts
+  (200-800ms random interval down to a deterministic `mousedown`-triggered
+  remount with zero timing randomness) found no reproduction against
+  this project's `Locator`-based interaction pattern. Consistent with
+  Playwright's own docs and issue tracker — `Locator.click()` is
+  documented to retry automatically on mid-action detachment — but the
+  scope of the claim is deliberately narrow: this says PhoenixQA's
+  specific interaction pattern didn't produce the failure in four
+  attempts, not that `Locator` is immune to it under every version or
+  interaction shape. Real "not attached" errors that DO occur in
+  `Locator`-based suites elsewhere trace to patterns (ElementHandle
+  misuse, a narrow `check()`/`uncheck()` edge case, a sub-frame
+  actionability race) that are remediated via locator-structure changes
+  in practice, not selector or retry healing. Decisions above
+  (action-recovery reframing, polymorphic collector, split prompts,
+  `HealingAction` hierarchy) are unaffected — they generalize across
+  failure types; only which failure type Sprint 6B-D actually build
+  against is redirected. See `LEARNINGS.md` Sprint 6A conclusion and
+  `docs/gaps.md` Gap #4.
 
 ## Documentation structure
 
@@ -203,6 +205,29 @@ this file is a map, not a copy.
 - **Thematic indexes (`docs/*.md`) summarize and link, never duplicate**
   full content. One source of truth per fact; indexes exist for fast
   lookup, not as a second copy to keep in sync.
+- **New `LEARNINGS.md` sprint entries are tagged by phase — `[Decision]`
+  / `[Implementation]` / `[Verification]` / `[Conclusion]` / `[Follow-up]`
+  — in subsection headers, always in that order within a sprint.**
+  Adopted after Sprint 6A, which mixed all five freely in the order
+  conversations actually happened and became hard to scan at >2000 lines.
+  Applies going forward only — the existing chronological history is
+  deliberately NOT retrofitted (rewriting past entries into a tidier
+  shape would misrepresent how the thinking actually unfolded, which is
+  the whole point of keeping this file chronological in the first
+  place). Sprint 6A itself got a light retrofit — phase tags added to
+  its existing headers, no prose rewritten — as the one exception,
+  since it was the sprint that surfaced the need for the convention.
+- **Claims about what an experiment shows are scoped to what was
+  actually tested, not generalized to the underlying tool or
+  technology.** A run that produces a clean null result supports "not
+  observed under these N conditions," not "impossible" or "resolved" —
+  the distinction between "deprioritized based on current evidence" and
+  "proven true/false in general" is treated as a required part of
+  writing up any experimental result in `LEARNINGS.md`, not an
+  optional hedge. Surfaced explicitly during Sprint 6A's `DETACHED_FROM_DOM`
+  writeup, where early drafts overstated a four-attempt null result as
+  an architectural impossibility rather than evidence supporting a
+  scope decision.
 
 ## Commit message convention
 
