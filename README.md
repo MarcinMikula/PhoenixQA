@@ -44,17 +44,20 @@ open architectural question.
 **Note on `detached_from_dom`:** the original working assumption (based
 on direct Selenium/Salesforce Lightning experience) was that framework
 re-render-mid-action failures would be the dominant real-world case for
-PhoenixQA to handle. Sprint 6A built a real reproduction mechanism
-(`componentRemount.jsx`) and tested it across four escalating
-configurations, ending with a deterministic, zero-timing-luck trigger.
-None reproduced the failure. Research into Playwright's own
-documentation and issue tracker confirmed why: `Locator`-based actions
-(which is all `BasePage` ever uses — never `ElementHandle`) retry
-automatically on mid-action detachment, architecturally absorbing the
-failure class Selenium-style automation is vulnerable to. This is
-treated as a genuine research finding, not a stalled sprint — see
-`LEARNINGS.md` "Sprint 6A conclusion" for the full investigation,
-sources, and what it means for the project's remaining scope.
+PhoenixQA to handle. Sprint 6A tested that assumption directly — a real
+reproduction mechanism (`componentRemount.jsx`) was built and run across
+four escalating configurations, ending with a deterministic,
+zero-timing-luck trigger. The consistent finding: no observable
+`DETACHED_FROM_DOM` failure, at any setting. Research into Playwright's
+own documentation and issue tracker explained why — `Locator`-based
+actions (all `BasePage` ever uses; never `ElementHandle`) retry
+automatically on mid-action detachment, architecturally absorbing most
+of the failure class Selenium-style automation is vulnerable to. This
+result changed the roadmap, not just a footnote: it's the project's
+first finding about the tool it's built on, produced by a controlled
+experiment rather than assumed. See `LEARNINGS.md` "Sprint 6A conclusion"
+for the full hypothesis → experiment → finding → decision trail, sources,
+and what it means for the project's remaining scope.
 
 **Important framing shift for the remaining failure types (Gap #12):**
 for `selector_not_found`, the selector itself is what's broken, and the
@@ -214,8 +217,8 @@ Switch via single env variable. No code changes.
 | Sprint 4  | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
 | Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
 | Sprint 6  | Failure type expansion — architecture decided (action-recovery reframing, polymorphic collector, split prompts, `HealingAction` hierarchy); target failure type redirected after Sprint 6A findings | 🚧 In progress |
-| Sprint 6A | `componentRemount.jsx` (TIMEOUT + MOUSEDOWN triggers) + classifier extended to recognize `DETACHED_FROM_DOM` | ✅ Done — reproduction empirically falsified for `Locator`-based automation across 4 escalating configurations; see `LEARNINGS.md` "Sprint 6A conclusion" |
-| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Paused — redirected to `NOT_VISIBLE`/`TIMEOUT_WAITING`; target not yet chosen |
+| Sprint 6A | `componentRemount.jsx` (TIMEOUT + MOUSEDOWN triggers) + classifier extended to recognize `DETACHED_FROM_DOM` | ✅ Done — controlled experiment (4 escalating configurations) found no reproduction against `Locator`-based automation; a finding about Playwright's architecture, not a mechanism gap. See `LEARNINGS.md` "Sprint 6A conclusion" |
+| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected to `NOT_VISIBLE`/`TIMEOUT_WAITING` based on the Sprint 6A finding; specific target not yet chosen |
 | Sprint 7  | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8  | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 9  | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
@@ -226,7 +229,7 @@ Switch via single env variable. No code changes.
 3. The prompt layer splits the same way — one prompt module per `FailureType`, since "find a selector" and "should this action be retried, and after what wait" are different cognitive tasks for the model.
 4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`.
 
-These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": four escalating reproduction attempts against Playwright's `Locator` API found no evidence that `detached_from_dom` is a priority case for this architecture (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full investigation), so the next vertical slice targets `not_visible` or `timeout_waiting` instead — the specific choice is an open decision.
+These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now, so the next vertical slice targets `not_visible` or `timeout_waiting` instead — the specific choice is an open decision.
 
 ---
 
