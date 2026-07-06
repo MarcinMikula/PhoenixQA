@@ -16,27 +16,35 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   not yet decided.
 - **Only `FailureType.SELECTOR_NOT_FOUND` has a real collection strategy.**
   `DETACHED_FROM_DOM`, `NOT_VISIBLE`, `TIMEOUT_WAITING` raise
-  `NotImplementedError` by design. Confirmed via hands-on Salesforce
-  Lightning experience that these are likely MORE common in real
-  enterprise apps than selector renaming — this is a required future
-  sprint, not a nice-to-have. **Sprint 6A (implemented, pending live
-  verification) extended the CLASSIFIER only** — `classify_playwright_error()`
-  now returns `DETACHED_FROM_DOM` for a matching Playwright error.
-  `ContextCollector` still raises `NotImplementedError` for it — that's
-  Sprint 6B's scope, not yet built. `NOT_VISIBLE` and `TIMEOUT_WAITING`
-  remain fully unaddressed, deferred until 6A-6D are verified.
-- **Chaos App's component remount mechanism exists but is unverified
-  against a real live run.** `chaos_app/src/chaos/componentRemount.jsx`
-  (Sprint 6A) implements `RemountTrigger.TIMEOUT` only — a single
-  component (LoginForm's submit button) is force-remounted on a
-  repeating 200-800ms timer via a `key` change. `STATE_CHANGE` and
-  `NETWORK_RESPONSE` triggers are declared in the `RemountTrigger` enum
-  but throw immediately if requested — not implemented. The classifier's
-  `DETACHED_FROM_DOM` substring matches are inferred from Playwright's
-  documented actionability-check wording, not yet confirmed against a
-  captured real error message — see `LEARNINGS.md` "Sprint 6A" for the
-  full epistemic caveat. Do not treat this mechanism as production-tested
-  until a live run confirms it.
+  `NotImplementedError` by design. The original Sprint 2 assumption that
+  `DETACHED_FROM_DOM` would be the most common of the three (from direct
+  Selenium/Salesforce Lightning experience) was empirically tested in
+  Sprint 6A and did not hold for a `Locator`-based framework — see
+  `LEARNINGS.md` "Sprint 6A conclusion" and `docs/gaps.md` Gap #4.
+  `classify_playwright_error()` DOES correctly recognize `DETACHED_FROM_DOM`
+  (verified live), but `ContextCollector` still raises `NotImplementedError`
+  for it, and building the collector is no longer the planned next step.
+  `NOT_VISIBLE`/`TIMEOUT_WAITING` are now the better-evidenced candidates
+  for the next collection strategy — which of the two is chosen is an
+  open decision.
+- **Chaos App's component remount mechanism is verified live and does
+  NOT reproduce `DETACHED_FROM_DOM` against `Locator`-based
+  interactions.** `chaos_app/src/chaos/componentRemount.jsx` (Sprint 6A)
+  was tested across four escalating configurations — a 200-800ms random
+  interval, tightened to 100-300ms, then to 10-30ms, then finally a
+  deterministic `mousedown`-triggered remount with zero timing
+  randomness — and none produced a classifiable failure. This is now
+  understood as a structural property of Playwright's `Locator` API
+  (automatic retry on mid-action detachment, confirmed via Playwright's
+  own documentation and issue tracker), not a mechanism design flaw —
+  see `LEARNINGS.md` "Sprint 6A conclusion" for the full investigation
+  and sources. Both `RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN`
+  are implemented and verified not to reproduce the target failure;
+  `RemountTrigger.STATE_CHANGE`/`NETWORK_RESPONSE` remain declared but
+  unimplemented, and are not currently planned to be pursued given this
+  result. The classifier's `DETACHED_FROM_DOM` substring matches remain
+  unconfirmed against a real captured Playwright error message — a
+  low-priority gap now, given the failure type's deprioritization.
 - **Autonomous Mode is fully unimplemented and deliberately blocked.**
   `Healer.attempt_heal()` raises `NotImplementedError` if
   `HEALING_MODE=autonomous` — won't be unblocked until stop conditions
@@ -47,6 +55,14 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   was first written; not a currently accurate limitation.)*
 
 ## Scope boundary about to change (Sprint 6B onward — decided, not yet built)
+
+**Note (post Sprint 6A):** the `HealingAction` hierarchy, polymorphic
+`ContextCollector`, and split prompt modules below remain the committed
+Sprint 6+ architecture regardless of target failure type. `DETACHED_FROM_DOM`
+specifically has been deprioritized (see `LEARNINGS.md` Sprint 6A
+conclusion, `docs/gaps.md` Gap #4) — the bullets below describe
+architecture that will land against whichever of `NOT_VISIBLE`/
+`TIMEOUT_WAITING` is chosen next, not necessarily `DETACHED_FROM_DOM`.
 
 - **`HealingProposal` is still the only provider return shape in the
   codebase today.** A `HealingAction` hierarchy (`SelectorReplacement`,
@@ -61,10 +77,12 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
 - **`ContextCollector` is still a single class with an if/elif-shaped
   routing method**, not yet the planned `BaseContextCollector` subclass
   router. The Sprint 6 refactor (moving `_collect_selector_context` into
-  `collectors/selector_collector.py` unchanged, and adding
-  `detached_collector.py`) has been decided but not implemented.
+  `collectors/selector_collector.py` unchanged, and adding a collector
+  for whichever failure type is chosen next) has been decided but not
+  implemented.
 - **`prompt_templates.py` is still one module**, not yet split into
-  `phoenix/ai/prompts/` per failure type. Planned for Sprint 6C.
+  `phoenix/ai/prompts/` per failure type. Planned for the sub-sprint
+  that replaces the original Sprint 6C.
 
 ## Known fragility (tracked, not yet fixed)
 
@@ -96,6 +114,12 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   LLM could widen a selector to something that technically matches but
   clicks the wrong element). Must be resolved before Sprint 6's history
   schema is designed — see Gap #1 in `docs/gaps.md`.
+- **Which failure type Sprint 6B actually targets is undecided.**
+  `DETACHED_FROM_DOM` was empirically deprioritized in Sprint 6A (see
+  `LEARNINGS.md` "Sprint 6A conclusion"); `NOT_VISIBLE` and
+  `TIMEOUT_WAITING` are both better-evidenced candidates for a
+  `Locator`-based framework, but the choice between them has not yet
+  been made — see `docs/gaps.md` Gap #4.
 
 ## Environment / tooling quirks (not project bugs, but easy to trip on)
 
@@ -107,8 +131,15 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   Workarounds used: `npm config set strict-ssl false` and
   `$env:NODE_TLS_REJECT_UNAUTHORIZED="0"` (Windows PowerShell), both
   scoped to the install step only.
+- **`.env.example` changes never reach either real `.env` file
+  automatically, on either side of this repo.** Confirmed twice now
+  (Sprint 5: `OLLAMA_MODEL`/`HEALING_MODE`; Sprint 6A:
+  `VITE_COMPONENT_REMOUNT_ENABLED`). When something "should have
+  changed" but the app's behavior didn't, check the actual gitignored
+  `.env` file directly before suspecting the code.
 
 ## Where to read more
 Search `LEARNINGS.md` for the relevant heading phrasing above (e.g.
-"Known fragility, deliberately not fixed in Sprint 2") for full context,
-the original failure mode, and any code snippets.
+"Known fragility, deliberately not fixed in Sprint 2", "Sprint 6A
+conclusion") for full context, the original failure mode, and any code
+snippets.
