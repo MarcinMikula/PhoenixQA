@@ -24,9 +24,29 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   `classify_playwright_error()` DOES correctly recognize `DETACHED_FROM_DOM`
   (verified live), but `ContextCollector` still raises `NotImplementedError`
   for it, and building the collector is no longer the planned next step.
-  `NOT_VISIBLE`/`TIMEOUT_WAITING` are now the better-evidenced candidates
-  for the next collection strategy — which of the two is chosen is an
-  open decision.
+  Sprint 6B diagnostics (see below) further found that a flat choice
+  between `NOT_VISIBLE`/`TIMEOUT_WAITING` isn't the right next move
+  either — the exact shape of the next collection strategy is an open
+  decision, not just a pick between the two existing enum members.
+- **`classify_playwright_error()` currently misclassifies actionability
+  failures as `SELECTOR_NOT_FOUND` — confirmed live, not just suspected.**
+  A `click()`/`fill()` timeout on an element that resolves but fails an
+  actionability check (not visible, disabled, readonly, animating,
+  covered by an overlay) produces a message containing
+  `"waiting for locator"`, the same substring the classifier checks for
+  `SELECTOR_NOT_FOUND` — so it's routed into the selector-healing
+  pipeline even though the selector is completely correct and nothing
+  about it needs replacing. Confirmed via real `healing_decisions.log`
+  entries plus six throwaway diagnostic tests covering all five
+  Playwright actionability reasons (`visible`/`enabled`/`editable`/
+  `stable`/`receives events`). `async_delay`'s current implementation
+  (conditional DOM mounting, not CSS-based hiding) happens to produce
+  the exact same message shape as genuine `SELECTOR_NOT_FOUND` — meaning
+  it cannot currently be used to exercise a true "resolved but not
+  actionable" case at all; a future chaos mechanism aimed at that case
+  would need to render the element immediately and toggle a CSS/attribute
+  property instead. See `LEARNINGS.md` Sprint 6B and `docs/gaps.md`
+  Gap #5.
 - **Chaos App's component remount mechanism is verified live and did
   NOT reproduce `DETACHED_FROM_DOM` against `Locator`-based
   interactions in four escalating attempts.** `chaos_app/src/chaos/
@@ -120,12 +140,16 @@ architecture that will land against whichever of `NOT_VISIBLE`/
   LLM could widen a selector to something that technically matches but
   clicks the wrong element). Must be resolved before Sprint 6's history
   schema is designed — see Gap #1 in `docs/gaps.md`.
-- **Which failure type Sprint 6B actually targets is undecided.**
-  `DETACHED_FROM_DOM` was empirically deprioritized in Sprint 6A (see
-  `LEARNINGS.md` "Sprint 6A conclusion"); `NOT_VISIBLE` and
-  `TIMEOUT_WAITING` are both better-evidenced candidates for a
-  `Locator`-based framework, but the choice between them has not yet
-  been made — see `docs/gaps.md` Gap #4.
+- **What the redesigned `FailureType`/classification model actually looks
+  like is undecided.** `DETACHED_FROM_DOM` was empirically deprioritized
+  in Sprint 6A (see `LEARNINGS.md` "Sprint 6A conclusion"). Sprint 6B
+  diagnostics then found that `NOT_VISIBLE`/`TIMEOUT_WAITING` aren't a
+  clean either/or choice either — Playwright's own call log distinguishes
+  "locator never resolved" from five distinct actionability reasons, a
+  structure the current flat `FailureType` enum doesn't capture. Whether
+  this becomes a `FailureCategory`/`ActionabilityReason` split or some
+  other shape is a deliberately open, upcoming decision — see
+  `docs/gaps.md` Gap #5 and `LEARNINGS.md` Sprint 6B.
 
 ## Environment / tooling quirks (not project bugs, but easy to trip on)
 

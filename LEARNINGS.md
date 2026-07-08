@@ -2317,6 +2317,175 @@ let the result choose the strategy, not the other way around.
 
 ---
 
+## Sprint 6B (pre-coding) — classifier diagnostics before choosing a collection target
+
+### [Decision] Investigate before choosing between `NOT_VISIBLE` and `TIMEOUT_WAITING`
+
+Following through on the previous section's own closing line. Before
+picking a Sprint 6B target, a structural concern was raised: `TIMEOUT_WAITING`
+is defined as "never reached an actionable state," which is close to a
+superset of what `NOT_VISIBLE` means ("in DOM, but hidden"). If
+Playwright's own error messages can't reliably distinguish these two at
+the point `classify_playwright_error()` runs, choosing between them as
+separate top-level `FailureType` values would repeat Gap #5's original
+problem — a classifier that can't actually tell its own categories
+apart — one layer deeper than the `fill()`/`click()` message-shape gap
+found in Sprint 4.
+
+**Decision:** run small, targeted diagnostic experiments against real
+Playwright output before deciding anything architectural. Same standing
+rule adopted after Sprint 6A (see `docs/architecture-decisions.md`,
+"Documentation structure"): don't generalize from documentation or
+plausible-sounding reasoning when the real message shape can just be
+captured directly. Each diagnostic below is a throwaway test file
+(`tests/chaos/test_diagnostic_*.py`), deleted immediately after its
+result was captured — never part of the permanent suite.
+
+### [Verification] Real production logs: `click()` and `fill()` `SELECTOR_NOT_FOUND` messages are identical, and reason-less
+
+Before running anything new, checked what real (not hand-crafted)
+`SELECTOR_NOT_FOUND` messages already sitting in `healing_decisions.log`
+actually look like, for both actions:
+
+```
+click(), selector never resolves:  "waiting for locator(\"[data-testid='btn-login']\")"
+fill(),  selector never resolves:  "waiting for locator(\"[data-testid='username']\")"
+```
+
+Both bare, both identical in shape, no trailing "reason" text of any
+kind. This is a direct correction of a detail assumed since Sprint 2:
+the original hand-crafted `click()` test sample used in
+`test_context_collector.py` (`"...to be visible"` appended) turns out to
+never have matched real `click()` output for a genuinely non-resolving
+selector — it was fictional in the same way the original `fill()`
+assumption was, before Sprint 4 caught that one. Neither hand-crafted
+sample was malicious or careless; both were reasonable guesses that
+happened to be wrong in the same direction, and both were only caught by
+checking real output.
+
+### [Verification] `async_delay`'s current implementation collides with `SELECTOR_NOT_FOUND`
+
+Isolated `async_delay` alone (`VITE_CHAOS_LEVEL=HIGH`,
+`VITE_OVERRIDE_SELECTOR_ROTATION=false`, `VITE_OVERRIDE_DOM_MUTATION=false`)
+and captured a real timeout against `AddItemForm`'s confirmation message
+with a deterministic 100ms `wait_for(state="visible")` — well under the
+mechanism's 300-2000ms delay window, so this reliably times out every
+run rather than depending on luck:
+
+```
+'Locator.wait_for: Timeout 100ms exceeded.\nCall log:\n  - waiting for locator("[data-testid=\'item-added-confirmation\']") to be visible\n'
+```
+
+This message contains `"waiting for locator"`, so today's classifier
+(`if "waiting for locator" in message: return SELECTOR_NOT_FOUND`)
+returns `SELECTOR_NOT_FOUND` for it — even though the selector is
+completely correct; the element simply isn't in the DOM yet.
+
+Root cause, found by reading `AddItemForm.jsx` directly: the confirmation
+is rendered conditionally (`{showConfirmation && <p>...}`), so the
+element genuinely does not exist in the DOM at all until it's ready —
+architecturally identical, from Playwright's perspective, to a selector
+that never matches anything. This is a real, distinct finding from the
+message-shape question above: it means `async_delay` as currently built
+cannot be used to produce a genuine "element exists but isn't actionable
+yet" case — only a "conditionally-not-yet-mounted" case, which Playwright
+cannot distinguish from `SELECTOR_NOT_FOUND` no matter how the classifier
+is improved, because the information simply isn't in the call log. A
+future chaos mechanism aimed at a true actionability case would need to
+render the element into the DOM immediately and toggle a CSS/attribute
+property (`display:none`, `disabled`, etc.) instead of conditionally
+mounting it.
+
+### [Verification] `fill()` reports a granular reason once the locator resolves
+
+Self-contained diagnostic via `page.set_content()` — no running Chaos
+App needed — testing `fill()` against a `disabled`, a `display:none`,
+and a `readonly` input, each with a 100ms timeout:
+
+```
+disabled:  "... - attempting fill action\n    ... element is not enabled\n  - retrying fill action ..."
+hidden:    "... - attempting fill action\n    ... element is not visible\n  - retrying fill action ..."
+readonly:  "... - attempting fill action\n    ... element is not editable\n  - retrying fill action ..."
+```
+
+All three resolve the locator first (`"locator resolved to <input .../>"`,
+not shown truncated above) and only then report a specific, distinct
+reason. This directly answers the open question from the previous
+section: `fill()` DOES support the same granular reporting `click()`
+does — the earlier assumption (Sprint 4) that `fill()`'s bare message
+meant it never reports a reason was itself incomplete. What Sprint 4
+actually observed was the *no-resolution* case (`SELECTOR_NOT_FOUND`);
+nobody had yet tested `fill()` against a resolved-but-not-actionable
+element to see whether the reason-reporting behavior also applied there.
+
+### [Verification] `click()`'s two remaining actionability reasons — `stable` and `receives events`
+
+Same self-contained approach, testing `click()` against an animating
+element (`stable`) and an element covered by a transparent overlay
+(`receives events`):
+
+**`receives events` — clean on the first attempt:**
+```
+"... element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div id=\"overlay\">...</div> intercepts pointer events ..."
+```
+Notably richer than the other four reasons — it names the specific
+blocking element (`<div id="overlay">`), not just the condition.
+
+**`stable` — took two attempts to observe correctly, and the failure
+mode itself is informative.** First attempt used a CSS `@keyframes`
+animation with default easing and a 200ms timeout — the test **passed**
+(`click()` succeeded). Root cause: default CSS easing has near-zero
+velocity at each keyframe boundary, so two consecutive animation-frame
+samples can land close enough together to read as "stable" purely by
+chance — the exact same category of problem as Sprint 6A's original
+timer-based `component_remount` attempts (a probabilistic test that
+can pass or fail depending on timing luck, teaching little either way).
+Fixed by switching to a monotonic `requestAnimationFrame` loop with no
+easing and no rest points, matching Sprint 6A's own lesson that a
+deterministic trigger beats a probabilistic one:
+
+```
+"... element is not stable\n    - retrying click action\n      - waiting 20ms\n    ... element is not stable ..."
+```
+
+### [Conclusion] Five actionability reasons and one resolution boundary, fully evidenced
+
+| Signal | Evidence source | Message shape |
+|---|---|---|
+| Locator never resolved | Real `healing_decisions.log` entries (`click()` and `fill()`) | `waiting for locator("...")` — nothing further |
+| `enabled` | Diagnostic (`fill()` on `disabled`) | `element is not enabled` |
+| `visible` | Diagnostic (`fill()` on `display:none`) | `element is not visible` |
+| `editable` | Diagnostic (`fill()` on `readonly`) | `element is not editable` |
+| `stable` | Diagnostic (`click()` on rAF-animated element) | `element is not stable` |
+| `receives events` | Diagnostic (`click()` under a transparent overlay) | `<blocking element> intercepts pointer events` |
+
+Every row above is either real production data or a captured live
+Playwright exception — none inferred from documentation alone. This
+confirms, empirically rather than by reading Playwright's actionability
+docs and assuming they map cleanly onto `NOT_VISIBLE`/`TIMEOUT_WAITING`,
+that Playwright's own model is genuinely two-stage: first "did the
+locator resolve at all," then — only if it did — "which specific
+readiness check is it failing." See `docs/gaps.md` Gap #5 (updated) and
+Gap #12 for the resulting scope note, and the "Current Sprint 6
+implication" section there for the candidate tree shape this evidence
+points toward.
+
+### [Follow-up] Model shape is evidenced, not yet decided
+
+Deliberately not resolved in this entry: whether `FailureType` gets
+restructured into a `FailureCategory`/`ActionabilityReason` split (or
+some other concrete shape), what happens to `HealingAction`'s already-
+declared `WaitStrategy`/`VisibilityStrategy` split under such a model,
+and how `DETACHED_FROM_DOM` (Gap #4, deprioritized but not removed) fits
+alongside a new "locator resolved vs. not" boundary. `docs/gaps.md`
+intentionally stops short of committing to an enum shape — the evidence
+above answers "does Playwright's call log support this distinction"
+(yes, clearly), not "exactly how should PhoenixQA's types model it."
+That's a separate, upcoming decision, to be made deliberately rather
+than folded into this diagnostic entry.
+
+---
+
 ## TODO (future sprints)
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
@@ -2347,5 +2516,6 @@ let the result choose the strategy, not the other way around.
 - Sprint 6A: DONE — `componentRemount.jsx` (`RemountTrigger.TIMEOUT` and `RemountTrigger.MOUSEDOWN`, single-component remount on LoginForm's submit button, independent `COMPONENT_REMOUNT_ENABLED` flag) + classifier extended to recognize `DETACHED_FROM_DOM` via substring match, checked before the generic SELECTOR_NOT_FOUND check. Live verification across 4 escalating configurations (200-800ms → 100-300ms → 10-30ms → deterministic mousedown) found no reproduction — deprioritized as a target failure type for this project's Locator-based interaction pattern, not proven impossible in general. See "Sprint 6A conclusion."
 - Sprint 6A live run: DONE — fixed `BasePage.click()`/`fill()` not catching `HealingRejectedError`/`HealingLimitExceededError`/`HealingFailedError` and re-raising the original Playwright error, per `healer.py`'s documented (but previously unimplemented) contract. 6 new regression tests in `tests/unit/test_base_page.py`. Unrelated to `DETACHED_FROM_DOM` — found incidentally while attempting to verify Sprint 6A live
 - Sprint 6B/C/D as originally scoped (`DetachedFromDomCollector`, `detached_prompt.py`, `RetryStrategy` end-to-end): PAUSED — see "Sprint 6A conclusion" above. Four escalating reproduction attempts found no `DETACHED_FROM_DOM` against this project's Locator-based interaction pattern; consistent with Playwright's documented auto-retry behavior on mid-action detachment, not confirmed as a mechanism deficiency in `componentRemount.jsx`
-- Sprint 6 (OPEN DECISION, blocking the next vertical slice): choose `NOT_VISIBLE` or `TIMEOUT_WAITING` as the redirected Sprint 6B target — both better-evidenced than `DETACHED_FROM_DOM` for `Locator`-based automation. `asyncDelay.js` already incidentally covers part of `NOT_VISIBLE`, unformalized since Sprint 2 — worth weighing as a starting-point advantage
+- Sprint 6B pre-coding diagnostics: DONE — five actionability reasons (`visible`/`enabled`/`editable`/`stable`/`receives events`) and the locator-resolution boundary confirmed empirically via real production logs plus six throwaway diagnostic tests. Superseded the plan to simply "choose NOT_VISIBLE or TIMEOUT_WAITING" — evidence points toward a two-stage model (selector resolution vs. actionability reason) rather than a flat choice between the two original enum members. See `LEARNINGS.md` Sprint 6B and `docs/gaps.md` Gap #5/#12
+- Sprint 6 (OPEN DECISION, blocking the next vertical slice): decide the concrete `FailureType`/`HealingAction` shape in light of the Sprint 6B diagnostics — whether to introduce `FailureCategory`+`ActionabilityReason`, keep `NOT_VISIBLE`/`TIMEOUT_WAITING` as-is with a smarter classifier, or something else. Deliberately left open in both `LEARNINGS.md` and `docs/gaps.md` pending a dedicated design discussion, not decided by default
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`

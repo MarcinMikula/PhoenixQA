@@ -31,8 +31,8 @@ rather than all at once:
 |---|---|
 | `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
 | `detached_from_dom` — framework re-render mid-action | 🔬 Investigated (Sprint 6A) — no reproduction found for `Locator`-based automation across four escalating attempts; deprioritized based on current evidence, not proven impossible — see `docs/gaps.md` Gap #4 |
-| `not_visible` — element exists but hidden/blocked | 🔜 Candidate for the next vertical slice — not yet started |
-| `timeout_waiting` — never reaches an actionable state | 🔜 Candidate for the next vertical slice — not yet started |
+| `not_visible` — element exists but hidden/blocked | 🔬 Under investigation — Sprint 6B diagnostics found this isn't cleanly separable from `timeout_waiting` as a top-level type; see below |
+| `timeout_waiting` — never reaches an actionable state | 🔬 Under investigation — same finding; Playwright's own model looks two-stage (resolved vs. not) rather than four flat types, see below |
 
 Why phase it: better to prove the full pipeline (collect → analyze → heal
 → validate) end-to-end on one well-understood failure type first, then
@@ -59,6 +59,25 @@ supporting a deprioritization, not proof that the failure type doesn't
 exist — see `LEARNINGS.md` "Sprint 6A conclusion" for the precise scope
 of the claim, the full hypothesis → experiment → finding → decision
 trail, sources, and what it means for the project's remaining scope.
+
+**Note on `not_visible`/`timeout_waiting`:** before picking one of these
+as the redirected target, a set of small diagnostic experiments checked
+whether Playwright's own error messages can actually tell them apart —
+`timeout_waiting`'s definition ("never reached an actionable state") is
+close to a superset of `not_visible`'s. They can't, in the way the
+original four-way `FailureType` split assumed. Real production logs plus
+targeted live captures show Playwright's model is genuinely two-stage:
+first "did the locator resolve at all" (a bare
+`waiting for locator(...)` message, identical for `click()` and `fill()`,
+means no), and only if it resolved, one of five distinct actionability
+reasons (`visible`, `enabled`, `editable`, `stable`, `receives events`).
+A flat choice between `not_visible` and `timeout_waiting` as separate
+top-level types would inherit the same ambiguity the classifier already
+had for `selector_not_found` before Sprint 4's fix. What concrete shape
+replaces the current model — a `FailureCategory`/`ActionabilityReason`
+split or something else — is a deliberately open decision, not yet made.
+See `LEARNINGS.md` Sprint 6B and `docs/gaps.md` Gap #5 for the full
+evidence trail.
 
 **Important framing shift for the remaining failure types (Gap #12):**
 for `selector_not_found`, the selector itself is what's broken, and the
@@ -228,7 +247,7 @@ Switch via single env variable. No code changes.
 | Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
 | Sprint 6  | Failure type expansion — architecture decided (action-recovery reframing, polymorphic collector, split prompts, `HealingAction` hierarchy); target failure type redirected after Sprint 6A findings | 🚧 In progress |
 | Sprint 6A | `componentRemount.jsx` (TIMEOUT + MOUSEDOWN triggers) + classifier extended to recognize `DETACHED_FROM_DOM` | ✅ Done — controlled experiment (4 escalating configurations) found no reproduction against `Locator`-based automation; a finding about Playwright's architecture, not a mechanism gap. See `LEARNINGS.md` "Sprint 6A conclusion" |
-| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected to `NOT_VISIBLE`/`TIMEOUT_WAITING` based on the Sprint 6A finding; specific target not yet chosen |
+| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected — pre-coding diagnostics done (see `LEARNINGS.md` Sprint 6B), concrete target and `FailureType` shape still an open decision |
 | Sprint 7  | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8  | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 9  | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
@@ -239,7 +258,7 @@ Switch via single env variable. No code changes.
 3. The prompt layer splits the same way — one prompt module per `FailureType`, since "find a selector" and "should this action be retried, and after what wait" are different cognitive tasks for the model.
 4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`.
 
-These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now, so the next vertical slice targets `not_visible` or `timeout_waiting` instead — the specific choice is an open decision.
+These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now. A follow-up round of diagnostics (Sprint 6B, see the Scope section's `not_visible`/`timeout_waiting` note above) then found that picking one of the two remaining types outright isn't the right next move either — Playwright's own model splits failures into "did the locator resolve" and, if so, one of five actionability reasons, which the current flat enum doesn't capture. The concrete shape of the fix is an open, upcoming decision.
 
 ---
 

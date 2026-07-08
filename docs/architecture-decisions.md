@@ -50,6 +50,22 @@ this file is a map, not a copy.
   today's `SELECTOR_NOT_FOUND` logic across unchanged; `context_collector.py`
   itself becomes a thin router, mirroring the existing `provider_factory.py`
   pattern. See Gap #12 in `docs/gaps.md` and `LEARNINGS.md` Sprint 6.
+- **Sprint 6B diagnostics confirmed Playwright's failure model is
+  two-stage, not flat — evidence gathered, exact `FailureType` shape
+  NOT yet decided.** Six throwaway diagnostic tests plus real
+  `healing_decisions.log` data established that Playwright's call log
+  first answers "did the locator resolve at all" and only then, if it
+  did, reports one of five concrete actionability reasons (`visible`,
+  `enabled`, `editable`, `stable`, `receives events` — the last one
+  naming the specific blocking element). This directly undercuts the
+  plan to simply pick `NOT_VISIBLE` or `TIMEOUT_WAITING` as Sprint 6B's
+  target, since a bare `"waiting for locator(...)"` message is
+  indistinguishable from `SELECTOR_NOT_FOUND` regardless of which one
+  gets chosen. Deliberately recorded as evidence, not a redesign
+  decision — whether this becomes a `FailureCategory`/`ActionabilityReason`
+  split, a smarter classifier keeping the existing enum, or something
+  else is an open, upcoming decision. See Gap #5 in `docs/gaps.md` and
+  `LEARNINGS.md` Sprint 6B.
 
 ## AI provider layer
 
