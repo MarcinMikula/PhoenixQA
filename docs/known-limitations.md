@@ -29,24 +29,26 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   either — the exact shape of the next collection strategy is an open
   decision, not just a pick between the two existing enum members.
 - **`classify_playwright_error()` currently misclassifies actionability
-  failures as `SELECTOR_NOT_FOUND` — confirmed live, not just suspected.**
-  A `click()`/`fill()` timeout on an element that resolves but fails an
-  actionability check (not visible, disabled, readonly, animating,
-  covered by an overlay) produces a message containing
-  `"waiting for locator"`, the same substring the classifier checks for
-  `SELECTOR_NOT_FOUND` — so it's routed into the selector-healing
-  pipeline even though the selector is completely correct and nothing
-  about it needs replacing. Confirmed via real `healing_decisions.log`
-  entries plus six throwaway diagnostic tests covering all five
-  Playwright actionability reasons (`visible`/`enabled`/`editable`/
-  `stable`/`receives events`). `async_delay`'s current implementation
-  (conditional DOM mounting, not CSS-based hiding) happens to produce
-  the exact same message shape as genuine `SELECTOR_NOT_FOUND` — meaning
-  it cannot currently be used to exercise a true "resolved but not
-  actionable" case at all; a future chaos mechanism aimed at that case
-  would need to render the element immediately and toggle a CSS/attribute
-  property instead. See `LEARNINGS.md` Sprint 6B and `docs/gaps.md`
-  Gap #5.
+  failures as `SELECTOR_NOT_FOUND` — confirmed live, not just suspected,
+  and a fix is decided but not yet implemented.** A `click()`/`fill()`
+  timeout on an element that resolves but fails an actionability check
+  (not visible, disabled, readonly, animating, covered by an overlay)
+  produces a message containing `"waiting for locator"`, the same
+  substring the classifier checks for `SELECTOR_NOT_FOUND` — so it's
+  routed into the selector-healing pipeline even though the selector is
+  completely correct and nothing about it needs replacing. Confirmed via
+  real `healing_decisions.log` entries plus six throwaway diagnostic
+  tests covering all five Playwright actionability reasons
+  (`visible`/`enabled`/`editable`/`stable`/`receives events`).
+  `async_delay`'s current implementation (conditional DOM mounting, not
+  CSS-based hiding) happens to produce the exact same message shape as
+  genuine `SELECTOR_NOT_FOUND` — meaning it cannot currently be used to
+  exercise a true "resolved but not actionable" case at all; a future
+  chaos mechanism aimed at that case would need to render the element
+  immediately and toggle a CSS/attribute property instead. The fix is a
+  decided replacement — `parse_playwright_call_log() -> ClassifiedFailure`
+  with `FailureCategory`/`ActionabilityReason` — not yet written in code.
+  See `LEARNINGS.md` "Sprint 6B (decision)" and `docs/gaps.md` Gap #5.
 - **Chaos App's component remount mechanism is verified live and did
   NOT reproduce `DETACHED_FROM_DOM` against `Locator`-based
   interactions in four escalating attempts.** `chaos_app/src/chaos/
@@ -140,16 +142,18 @@ architecture that will land against whichever of `NOT_VISIBLE`/
   LLM could widen a selector to something that technically matches but
   clicks the wrong element). Must be resolved before Sprint 6's history
   schema is designed — see Gap #1 in `docs/gaps.md`.
-- **What the redesigned `FailureType`/classification model actually looks
-  like is undecided.** `DETACHED_FROM_DOM` was empirically deprioritized
-  in Sprint 6A (see `LEARNINGS.md` "Sprint 6A conclusion"). Sprint 6B
-  diagnostics then found that `NOT_VISIBLE`/`TIMEOUT_WAITING` aren't a
-  clean either/or choice either — Playwright's own call log distinguishes
-  "locator never resolved" from five distinct actionability reasons, a
-  structure the current flat `FailureType` enum doesn't capture. Whether
-  this becomes a `FailureCategory`/`ActionabilityReason` split or some
-  other shape is a deliberately open, upcoming decision — see
-  `docs/gaps.md` Gap #5 and `LEARNINGS.md` Sprint 6B.
+- **The decided `FailureCategory`/`ActionabilityReason` model has two
+  known, explicitly tracked limits, not fully solved by adopting it.**
+  Gap #13: the model depends entirely on Playwright's undocumented,
+  unversioned diagnostic text — a future Playwright upgrade could
+  silently break the parser the same way this project's own hand-crafted
+  message assumptions have already twice turned out wrong (Sprint 4,
+  Sprint 6B), without Playwright changing anything. Gap #14: even with
+  the corrected `LOCATOR_RESOLUTION` naming, the collector still can't
+  tell apart genuine selector drift from a conditionally-not-yet-mounted
+  element or an unexpected app state — Playwright's message is identical
+  in all three cases. See `docs/gaps.md` Gap #13/#14 and `LEARNINGS.md`
+  "Sprint 6B (decision)".
 
 ## Environment / tooling quirks (not project bugs, but easy to trip on)
 

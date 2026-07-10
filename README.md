@@ -31,8 +31,8 @@ rather than all at once:
 |---|---|
 | `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
 | `detached_from_dom` — framework re-render mid-action | 🔬 Investigated (Sprint 6A) — no reproduction found for `Locator`-based automation across four escalating attempts; deprioritized based on current evidence, not proven impossible — see `docs/gaps.md` Gap #4 |
-| `not_visible` — element exists but hidden/blocked | 🔬 Under investigation — Sprint 6B diagnostics found this isn't cleanly separable from `timeout_waiting` as a top-level type; see below |
-| `timeout_waiting` — never reaches an actionable state | 🔬 Under investigation — same finding; Playwright's own model looks two-stage (resolved vs. not) rather than four flat types, see below |
+| `not_visible` — element exists but hidden/blocked | 🚧 Modeled as `FailureCategory.ACTIONABILITY` + `ActionabilityReason.VISIBLE` — decided, not yet implemented; see below |
+| `timeout_waiting` — never reaches an actionable state | 🚧 Superseded by the `FailureCategory.ACTIONABILITY` model (covers `enabled`/`editable`/`stable`/`receives_events` too) — decided, not yet implemented; see below |
 
 Why phase it: better to prove the full pipeline (collect → analyze → heal
 → validate) end-to-end on one well-understood failure type first, then
@@ -72,12 +72,24 @@ first "did the locator resolve at all" (a bare
 means no), and only if it resolved, one of five distinct actionability
 reasons (`visible`, `enabled`, `editable`, `stable`, `receives events`).
 A flat choice between `not_visible` and `timeout_waiting` as separate
-top-level types would inherit the same ambiguity the classifier already
-had for `selector_not_found` before Sprint 4's fix. What concrete shape
-replaces the current model — a `FailureCategory`/`ActionabilityReason`
-split or something else — is a deliberately open decision, not yet made.
-See `LEARNINGS.md` Sprint 6B and `docs/gaps.md` Gap #5 for the full
-evidence trail.
+top-level types would have inherited the same ambiguity the classifier
+already had for `selector_not_found` before Sprint 4's fix.
+
+The decided replacement: `FailureCategory` (`LOCATOR_RESOLUTION` /
+`ACTIONABILITY` / a dormant `REFERENCE` for the `detached_from_dom`
+family) plus `ActionabilityReason` for the five concrete reasons above.
+`LOCATOR_RESOLUTION`, deliberately not `SELECTOR` — an unresolved
+locator has more than one plausible real cause (genuine selector drift,
+an element that's conditionally not yet mounted, the app being in an
+unexpected state), which Playwright's own message can't distinguish;
+naming the category after "selector" would have presupposed the
+diagnosis the evidence argued against. This is a decided architecture,
+not yet implemented in code — see `LEARNINGS.md` "Sprint 6B (decision)"
+and `docs/gaps.md` Gap #5/#12 for the full model, and Gap #13/#14 for
+the two limits this decision explicitly does not resolve (the model's
+dependence on Playwright's unversioned diagnostic text, and
+`LocatorResolutionCollector`'s continued inability to tell apart *why*
+a locator never resolved).
 
 **Important framing shift for the remaining failure types (Gap #12):**
 for `selector_not_found`, the selector itself is what's broken, and the
@@ -113,16 +125,22 @@ a hypothesis is something to find out.
 Test Failure
     │
     ▼
-Failure Classifier        ← FailureType (selector_not_found, detached_from_dom, ...)
+Failure Classifier        ← FailureCategory (locator_resolution, actionability, reference)
+    │                          + ActionabilityReason (5 values) — decided, not yet implemented;
+    │                          today's live code still uses the flat FailureType enum
     │
     ▼
-Context Collector          ← one collector per FailureType (target architecture):
-    │                          selector_collector.py    (DOM snapshot, weighted scoring) — live
-    │                          [next failure type]        (planned — NOT_VISIBLE/TIMEOUT_WAITING)
+Context Collector          ← one collector per FailureCategory (target architecture):
+    │                          locator_resolution_collector.py (DOM snapshot, weighted scoring)
+    │                          — today's selector_collector.py, live, pending rename
+    │                          actionability_collector.py        (planned, all 5 reasons)
+    │                          reference_collector.py             (dormant, no active plan)
     ▼
 LLM Analyzer               ← Ollama (local) or Anthropic API → structured HealingAction
-    │                          SelectorReplacement (selector_not_found) — live
-    │                          RetryStrategy / WaitStrategy / VisibilityStrategy — declared, not yet implemented
+    │                          SelectorReplacement — live today (currently keyed off
+    │                          FailureType.SELECTOR_NOT_FOUND, target: locator_resolution)
+    │                          ActionabilityStrategy (actionability, 5 reasons) — decided, not yet implemented
+    │                          RetryStrategy (reference, dormant) — declared only
     │
     ├──► Safe Mode        ← Human reviews full context, accepts/rejects → Ground Truth
     │
@@ -247,7 +265,7 @@ Switch via single env variable. No code changes.
 | Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
 | Sprint 6  | Failure type expansion — architecture decided (action-recovery reframing, polymorphic collector, split prompts, `HealingAction` hierarchy); target failure type redirected after Sprint 6A findings | 🚧 In progress |
 | Sprint 6A | `componentRemount.jsx` (TIMEOUT + MOUSEDOWN triggers) + classifier extended to recognize `DETACHED_FROM_DOM` | ✅ Done — controlled experiment (4 escalating configurations) found no reproduction against `Locator`-based automation; a finding about Playwright's architecture, not a mechanism gap. See `LEARNINGS.md` "Sprint 6A conclusion" |
-| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected — pre-coding diagnostics done (see `LEARNINGS.md` Sprint 6B), concrete target and `FailureType` shape still an open decision |
+| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected — `FailureCategory`/`ActionabilityReason` model decided (see `LEARNINGS.md` "Sprint 6B (decision)"), `parse_playwright_call_log()` rewrite is the next concrete implementation step, not yet started |
 | Sprint 7  | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8  | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 9  | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
@@ -256,7 +274,7 @@ Switch via single env variable. No code changes.
 1. The non-`selector_not_found` failure types are reframed as **action recovery**, not selector replacement — there may be nothing wrong with the selector itself.
 2. `ContextCollector` becomes a router over one `BaseContextCollector` subclass per `FailureType`, replacing the current if/elif ladder.
 3. The prompt layer splits the same way — one prompt module per `FailureType`, since "find a selector" and "should this action be retried, and after what wait" are different cognitive tasks for the model.
-4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy (`SelectorReplacement`, `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`.
+4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy — `SelectorReplacement` (`locator_resolution`), one merged `ActionabilityStrategy` parameterized by reason + recovery kind (`actionability`, superseding the originally-declared separate `WaitStrategy`/`VisibilityStrategy`), and a dormant `RetryStrategy` (`reference`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`. See `LEARNINGS.md` "Sprint 6B (decision)" for the finalized shape.
 
 These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now. A follow-up round of diagnostics (Sprint 6B, see the Scope section's `not_visible`/`timeout_waiting` note above) then found that picking one of the two remaining types outright isn't the right next move either — Playwright's own model splits failures into "did the locator resolve" and, if so, one of five actionability reasons, which the current flat enum doesn't capture. The concrete shape of the fix is an open, upcoming decision.
 
