@@ -2722,6 +2722,54 @@ six actionability reasons' real shapes from Sprint 6B; `REFERENCE`
 intentionally has none, by design), before collector or prompt work
 begins.
 
+### [Implementation] `parse_playwright_call_log()` written and verified — first vertical slice done
+
+`phoenix/collector/failure_classifier.py` now contains the full new
+model — `FailureCategory` (gained a fourth member, `UNKNOWN`, not
+explicitly named in the decision above but a direct, necessary carry-over
+of the old `FailureType.UNKNOWN` safety net for non-Playwright exceptions
+and unrecognized message shapes), `ActionabilityReason`,
+`ClassifiedFailure`, and `parse_playwright_call_log()` itself — living
+alongside the old `FailureType`/`classify_playwright_error()`,
+deliberately not yet removed. Removing the old model now would break
+`base_provider.py`'s `HealingContext` and `context_collector.py`, which
+still depend on it; per this project's own vertical-slice discipline, the
+classifier gets verified in isolation before anything downstream is
+touched, rather than changing the classifier and its callers in one
+undifferentiated pass. Both are explicitly marked `DEPRECATED` in the
+module docstring so this coexistence reads as a known, temporary state,
+not an oversight.
+
+**`tests/unit/test_failure_classifier.py` is the first classifier test
+file in this project's history built entirely from verbatim, real
+captured Playwright output**, not hand-crafted samples — every message
+is one of the actual diagnostic captures from Sprint 6B's own
+investigation (two pulled directly from real `healing_decisions.log`
+entries, six from the throwaway diagnostic tests), reproduced exactly as
+observed. This directly closes the loop on a pattern that had repeated
+twice already in this project (Sprint 4's `fill()`/`click()` gap, Sprint
+6B's own discovery that Sprint 2's original hand-crafted `click()` sample
+never matched real output either) — this is the first time the
+classifier's tests cannot be wrong about what Playwright actually says,
+because they're built from what Playwright actually said.
+
+**Verified: 12/12 new tests pass, 66/66 full unit suite passes.** Ran
+both the new file in isolation and the complete `tests/unit/` suite —
+every pre-existing test, including the old, still-live
+`TestClassifyPlaywrightError*` classes in `test_context_collector.py`,
+passed unchanged. Confirms the deprecated/new coexistence is genuinely
+inert — adding the new model alongside the old one changed nothing about
+existing behavior, exactly as intended for a vertical slice that isn't
+supposed to touch downstream code yet.
+
+**Next concrete step, not yet started:** switch `ContextCollector` and
+`HealingContext` over to the new model (flat `category`/
+`actionability_reason` fields, per the decision above), at which point
+the deprecated `FailureType`/`classify_playwright_error()` block gets
+deleted from `failure_classifier.py` entirely — no compatibility
+adapter kept permanently, consistent with the "breaking change
+internally" decision already made.
+
 ---
 
 ## TODO (future sprints)
@@ -2756,7 +2804,8 @@ begins.
 - Sprint 6B/C/D as originally scoped (`DetachedFromDomCollector`, `detached_prompt.py`, `RetryStrategy` end-to-end): PAUSED — see "Sprint 6A conclusion" above. Four escalating reproduction attempts found no `DETACHED_FROM_DOM` against this project's Locator-based interaction pattern; consistent with Playwright's documented auto-retry behavior on mid-action detachment, not confirmed as a mechanism deficiency in `componentRemount.jsx`
 - Sprint 6B pre-coding diagnostics: DONE — five actionability reasons (`visible`/`enabled`/`editable`/`stable`/`receives events`) and the locator-resolution boundary confirmed empirically via real production logs plus six throwaway diagnostic tests. Superseded the plan to simply "choose NOT_VISIBLE or TIMEOUT_WAITING" — evidence points toward a two-stage model (selector resolution vs. actionability reason) rather than a flat choice between the two original enum members. See `LEARNINGS.md` Sprint 6B and `docs/gaps.md` Gap #5/#12
 - Sprint 6B model decision: DONE — `FailureCategory` (`LOCATOR_RESOLUTION`/`ACTIONABILITY`/`REFERENCE`) + `ActionabilityReason` (5 values) + `ClassifiedFailure` adopted as the target design, replacing the flat `FailureType` enum internally. `HealingContext` gains `category`/`actionability_reason` flat fields; `HealingAction` gains one merged `ActionabilityStrategy` (with a `strategy: ActionabilityStrategyKind` field) replacing the separately-declared `WaitStrategy`/`VisibilityStrategy`. `ContextCollector` becomes three collectors (`locator_resolution_collector.py`, `actionability_collector.py`, `reference_collector.py`, the last dormant). See `LEARNINGS.md` "Sprint 6B (decision)"
-- Sprint 6B implementation (NOT started): `classify_playwright_error()` → `parse_playwright_call_log()` rewrite is the first concrete step, verified against real captured call logs before collector/prompt work begins — same vertical-slice discipline as Sprint 6's original 6A-6D plan
+- Sprint 6B implementation: DONE (classifier only) — `classify_playwright_error()` → `parse_playwright_call_log()` rewrite is live in `phoenix/collector/failure_classifier.py`, verified against 8 real captured call logs (12 unit tests, 66/66 full suite green). Old `FailureType`/`classify_playwright_error()` deliberately kept alongside, marked deprecated, not yet removed
+- Sprint 6B implementation, next step (NOT started): switch `ContextCollector`/`HealingContext` to the new `category`/`actionability_reason` fields, then delete the deprecated `FailureType` block from `failure_classifier.py` entirely — no permanent compatibility adapter, per the "breaking change internally" decision
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
