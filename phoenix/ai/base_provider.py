@@ -7,18 +7,26 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
-from phoenix.collector.failure_classifier import FailureType
+from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 
 
 @dataclass
 class HealingContext:
-    """Everything the LLM needs to propose a selector fix."""
+    """
+    Everything the LLM needs to propose a fix — a selector replacement
+    for FailureCategory.LOCATOR_RESOLUTION, or (once built) an
+    actionability recovery strategy for FailureCategory.ACTIONABILITY.
+    See LEARNINGS.md "Sprint 6B (decision)" for why this is category +
+    optional reason, not the single flat failure_type field this class
+    had through Sprint 6A.
+    """
     broken_selector: str
     error_message: str
     dom_snapshot: str
     page_url: str
     original_code: str
-    failure_type: FailureType
+    category: FailureCategory
+    actionability_reason: Optional[ActionabilityReason] = None
     screenshot_path: Optional[str] = None
 
 

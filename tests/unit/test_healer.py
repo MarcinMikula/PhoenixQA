@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from phoenix.ai.base_provider import HealingContext, HealingProposal, ProviderResult
-from phoenix.collector.failure_classifier import FailureType
+from phoenix.collector.failure_classifier import FailureCategory
 from phoenix.healing.autonomous_policy import AutonomousPolicy
 from phoenix.healing.healer import (
     Healer,
@@ -37,7 +37,7 @@ def _make_context():
         dom_snapshot="<form>...</form>",
         page_url="http://localhost:5173/",
         original_code="click",
-        failure_type=FailureType.SELECTOR_NOT_FOUND,
+        category=FailureCategory.LOCATOR_RESOLUTION,
     )
 
 

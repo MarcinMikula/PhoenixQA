@@ -5,13 +5,17 @@ Unit tests for log_decision. Pure file I/O — no live Playwright page or
 Ollama call needed, unlike the rest of Sprint 4 (Healer/safe_mode require
 a real browser page and a real LLM round-trip, so they're exercised via
 manual integration testing against Chaos App, not here).
+
+Sprint 6B: failure_type assertions replaced with failure_category /
+actionability_reason / failure_label, matching HealingContext's new
+fields (see LEARNINGS.md "Sprint 6B (decision)").
 """
 import json
 
 import pytest
 
 from phoenix.ai.base_provider import HealingContext, HealingProposal
-from phoenix.collector.failure_classifier import FailureType
+from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.decision_logger import log_decision
 
 
@@ -22,7 +26,19 @@ def _sample_context():
         dom_snapshot="<form>...</form>",
         page_url="http://localhost:5173/",
         original_code="fill",
-        failure_type=FailureType.SELECTOR_NOT_FOUND,
+        category=FailureCategory.LOCATOR_RESOLUTION,
+    )
+
+
+def _sample_actionability_context():
+    return HealingContext(
+        broken_selector="#target",
+        error_message="Locator.click: Timeout 300ms exceeded.",
+        dom_snapshot="<button id='target'>Click me</button>",
+        page_url="http://localhost:5173/",
+        original_code="click",
+        category=FailureCategory.ACTIONABILITY,
+        actionability_reason=ActionabilityReason.STABLE,
     )
 
 
@@ -50,9 +66,25 @@ class TestLogDecision:
         assert entry["proposed_selector"] == "[data-testid='username-x7f2']"
         assert entry["confidence"] == 0.92
         assert entry["accepted"] is True
-        assert entry["failure_type"] == "selector_not_found"
+        assert entry["failure_category"] == "locator_resolution"
+        assert entry["actionability_reason"] is None
+        assert entry["failure_label"] == "locator_resolution"
         assert entry["mode"] == "safe"
         assert "timestamp" in entry
+
+    def test_actionability_context_produces_combined_failure_label(self, tmp_path):
+        # Confirms the "category:reason" format described in
+        # LEARNINGS.md "Sprint 6B (decision)" actually gets written,
+        # not just designed.
+        log_path = tmp_path / "healing_decisions.log"
+        log_decision(
+            _sample_actionability_context(), _sample_proposal(), accepted=True, log_path=str(log_path)
+        )
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["failure_category"] == "actionability"
+        assert entry["actionability_reason"] == "stable"
+        assert entry["failure_label"] == "actionability:stable"
 
     def test_includes_raw_response_for_post_hoc_diagnosis(self, tmp_path):
         # Caught via a real end-to-end run: a parse-failure entry with no
@@ -95,10 +127,9 @@ class TestLogDecision:
         # "mode": "safe" unconditionally, so every Autonomous Mode
         # decision was silently mislabeled in the log — harmless-looking
         # but would have corrupted any future Safe-vs-Autonomous analysis
-        # built on this field (Sprint 6/7 Healing History, Sprint 8
-        # benchmark). This test protects the fix: mode must reflect what
-        # the caller actually passes, defaulting to "safe" only when
-        # genuinely not specified.
+        # built on this field. This test protects the fix: mode must
+        # reflect what the caller actually passes, defaulting to "safe"
+        # only when genuinely not specified.
         log_path = tmp_path / "healing_decisions.log"
         log_decision(
             _sample_context(), _sample_proposal(), accepted=True,

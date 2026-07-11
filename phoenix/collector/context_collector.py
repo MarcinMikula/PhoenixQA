@@ -1,10 +1,11 @@
 """
 context_collector.py
 
-Gathers everything the LLM Analyzer (Sprint 3) needs to diagnose a failure.
-Sprint 2 scope: only FailureType.SELECTOR_NOT_FOUND has a real
-implementation. See LEARNINGS.md "Gap #4" for why the other FailureType
-values raise NotImplementedError here rather than being half-built.
+Gathers everything the LLM Analyzer (Sprint 3) needs to diagnose a
+failure. Current scope: only FailureCategory.LOCATOR_RESOLUTION has a
+real implementation. See LEARNINGS.md "Gap #4" and "Sprint 6B (decision)"
+for why ACTIONABILITY (5 reasons) and the dormant REFERENCE category
+raise NotImplementedError here rather than being half-built.
 
 ARCHITECTURE (see LEARNINGS.md "Refinement: scoring must start from the
 selector name, not DOM position" for the full reasoning trail):
@@ -31,18 +32,22 @@ elements are structurally identical (e.g. TicketList's three rows). Sprint
 call instead of re-querying the DOM a second time.
 
 SPRINT 6 NOTE: this class is planned to become a thin router over
-BaseContextCollector subclasses (one per FailureType), per the Sprint 6
-pre-coding decision recorded in LEARNINGS.md — not yet implemented as of
-Sprint 6A, which is classifier-only scope. The SELECTOR_NOT_FOUND logic
-below is expected to move into collectors/selector_collector.py unchanged
-when that refactor lands (Sprint 6B or later), not to be rewritten.
+BaseContextCollector subclasses (one per FailureCategory), per the
+Sprint 6 pre-coding decision recorded in LEARNINGS.md — not yet
+implemented. The LOCATOR_RESOLUTION logic below is expected to move into
+collectors/locator_resolution_collector.py unchanged when that refactor
+lands, not to be rewritten.
 """
 import re
 
 from playwright.sync_api import Page
 
 from phoenix.ai.base_provider import HealingContext
-from phoenix.collector.failure_classifier import FailureType, classify_playwright_error
+from phoenix.collector.failure_classifier import (
+    ClassifiedFailure,
+    FailureCategory,
+    parse_playwright_call_log,
+)
 
 # Sprint 2 tuning constants — not derived from real data yet (see
 # LEARNINGS.md Gap #7, cost accounting). Revisit once Sprint 3/4 give us
@@ -209,25 +214,24 @@ class ContextCollector:
     def collect(self, broken_selector: str, error: Exception, original_code: str) -> HealingContext:
         """
         Main entry point — called from Healer (Sprint 4/5) when a
-        Playwright action fails. Classifies the failure, then routes to
-        the appropriate collection strategy.
+        Playwright action fails. Classifies the failure via
+        parse_playwright_call_log(), then routes to the appropriate
+        collection strategy.
         """
-        failure_type = classify_playwright_error(error, page=self.page, selector=broken_selector)
+        classified = parse_playwright_call_log(error)
 
-        if failure_type == FailureType.SELECTOR_NOT_FOUND:
-            return self._collect_selector_context(broken_selector, error, original_code, failure_type)
+        if classified.category == FailureCategory.LOCATOR_RESOLUTION:
+            return self._collect_selector_context(broken_selector, error, original_code, classified)
 
-        # Sprint 6B scope for DETACHED_FROM_DOM specifically (see
-        # LEARNINGS.md "Gap #4", "Gap #12", and the Sprint 6 sub-sprint
-        # breakdown). Sprint 6A (this classifier's current state) is
-        # classifier-only, by design — zero collection/healing logic
-        # touched yet. NOT_VISIBLE / TIMEOUT_WAITING remain unscheduled
-        # until DETACHED_FROM_DOM is proven end-to-end. Explicit and
-        # loud, not a silent fallback that would produce misleading
-        # context.
+        # Only LOCATOR_RESOLUTION has a real collection strategy so far.
+        # ACTIONABILITY (5 reasons) and the dormant REFERENCE category
+        # are declared in the model (see LEARNINGS.md "Sprint 6B
+        # (decision)") but have no collector yet. Explicit and loud, not
+        # a silent fallback that would produce misleading context.
         raise NotImplementedError(
-            f"ContextCollector has no collection strategy for {failure_type.value} yet. "
-            f"Planned for Sprint 6B (Failure type expansion — DETACHED_FROM_DOM) — see LEARNINGS.md."
+            f"ContextCollector has no collection strategy for {classified.category.value} yet. "
+            f"Planned for a future sub-sprint (actionability_collector.py) — see LEARNINGS.md "
+            f"'Sprint 6B (decision)'."
         )
 
     def _collect_selector_context(
@@ -235,7 +239,7 @@ class ContextCollector:
         broken_selector: str,
         error: Exception,
         original_code: str,
-        failure_type: FailureType,
+        classified: ClassifiedFailure,
     ) -> HealingContext:
         tokens = tokenize_selector(broken_selector)
 
@@ -281,6 +285,7 @@ class ContextCollector:
             dom_snapshot=dom_snapshot,
             page_url=self.page.url,
             original_code=original_code,
-            failure_type=failure_type,
+            category=classified.category,
+            actionability_reason=classified.actionability_reason,
             screenshot_path=None,  # Gap #8 — deliberately undecided, see LEARNINGS.md
         )

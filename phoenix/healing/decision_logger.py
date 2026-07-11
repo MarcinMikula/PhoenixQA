@@ -16,6 +16,15 @@ diagnozę/naprawę" — every field needed for that post-hoc review is
 captured here, including the raw LLM response text (essential for
 diagnosing parse failures — without it, a "JSON parse error" message
 alone gives no way to see WHAT the model actually returned).
+
+Sprint 6B (decision): failure_type (a single flat string) is replaced by
+failure_category + actionability_reason (matching HealingContext's new
+fields) plus a derived, denormalized failure_label
+(e.g. "actionability:stable") purely for human/dashboard readability —
+not a second source of truth. Existing log entries written under the old
+"failure_type" key are left as historical record, unmigrated; no
+retention/migration policy is defined for this file regardless (see
+docs/known-limitations.md).
 """
 import json
 from datetime import datetime, timezone
@@ -24,6 +33,19 @@ from pathlib import Path
 from phoenix.ai.base_provider import HealingContext, HealingProposal
 
 DEFAULT_LOG_PATH = "healing_decisions.log"
+
+
+def _failure_label(context: HealingContext) -> str:
+    """
+    Denormalized, human-readable convenience field —
+    "actionability:stable", or just "locator_resolution" when there's no
+    reason. Exists for log-reading and the eventual Allure dashboard's
+    grouping/filtering; category + actionability_reason remain the real
+    source of truth.
+    """
+    if context.actionability_reason is not None:
+        return f"{context.category.value}:{context.actionability_reason.value}"
+    return context.category.value
 
 
 def log_decision(
@@ -55,18 +77,16 @@ def log_decision(
     optional and default to None — Safe Mode call sites that don't have
     ProviderResult timing/token data on hand (or callers from before this
     was added) still log a valid entry, just with these fields null
-    rather than fabricated. See LEARNINGS.md "Future consideration:
-    richer decision log fields" — these were already being computed
-    in-memory (ProviderResult, HealingBudget) and simply discarded after
-    budget tracking instead of also being logged; this is pure wiring,
-    not new logic.
+    rather than fabricated.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "page_url": context.page_url,
         "broken_selector": context.broken_selector,
         "error_message": context.error_message,
-        "failure_type": context.failure_type.value if context.failure_type else None,
+        "failure_category": context.category.value if context.category else None,
+        "actionability_reason": context.actionability_reason.value if context.actionability_reason else None,
+        "failure_label": _failure_label(context) if context.category else None,
         "original_code": context.original_code,
         "proposed_selector": proposal.proposed_selector,
         "confidence": proposal.confidence,

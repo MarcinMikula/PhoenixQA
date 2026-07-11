@@ -7,14 +7,17 @@ verified in isolation before trusting it inside the full collect() flow.
 
 Full collect() behavior (DOM scoring, landmark walking, shadow piercing)
 needs a real Page object — that's covered by an integration test against
-the actual Chaos App, not here. See tests/integration/ for that, once
-Sprint 4/5 gives us a Healer to drive the end-to-end flow worth testing.
+the actual Chaos App, not here. See tests/integration/ for that.
+
+Classifier tests (parse_playwright_call_log / FailureCategory /
+ActionabilityReason) moved to tests/unit/test_failure_classifier.py as
+of Sprint 6B — that file replaces the old TestClassifyPlaywrightError*
+classes that used to live here, since classify_playwright_error()/
+FailureType no longer exist (see LEARNINGS.md "Sprint 6B (decision)").
 """
 import pytest
 
 from phoenix.collector.context_collector import tokenize_selector
-from phoenix.collector.failure_classifier import FailureType, classify_playwright_error
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 
 @pytest.mark.unit
@@ -47,112 +50,3 @@ class TestTokenizeSelector:
         # kind of case Sprint 3 prompt design should watch for.
         tokens = tokenize_selector("[data-testid='item-name']")
         assert tokens == ["item", "name"]
-
-
-@pytest.mark.unit
-class TestClassifyPlaywrightError:
-    def test_non_playwright_exception_is_unknown(self):
-        result = classify_playwright_error(ValueError("not a playwright error"))
-        assert result == FailureType.UNKNOWN
-
-    def test_locator_visible_timeout_is_selector_not_found(self):
-        error = PlaywrightTimeout(
-            "Timeout 10000ms exceeded.\n"
-            "=========================== logs ===========================\n"
-            "waiting for locator(\"[data-testid='username-ab12']\") to be visible"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.SELECTOR_NOT_FOUND
-
-    def test_fill_style_timeout_without_visible_suffix_is_selector_not_found(self):
-        # Caught via a real end-to-end run against Chaos App, not in
-        # isolation — fill() actions log "waiting for locator(...)" with
-        # NO "to be visible" suffix, unlike click(). The original
-        # classifier required that suffix unconditionally and silently
-        # misclassified every fill() timeout as UNKNOWN. See LEARNINGS.md.
-        error = PlaywrightTimeout(
-            "Locator.fill: Timeout 30000ms exceeded.\n"
-            "Call log:\n"
-            "  - waiting for locator(\"[data-testid='username']\")"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.SELECTOR_NOT_FOUND
-
-    def test_unrecognized_timeout_shape_is_unknown_not_misclassified(self):
-        # Sprint 2 deliberately returns UNKNOWN rather than guessing —
-        # this test documents and protects that choice.
-        error = PlaywrightTimeout("Timeout 10000ms exceeded. some other reason entirely")
-        result = classify_playwright_error(error)
-        assert result == FailureType.UNKNOWN
-
-
-@pytest.mark.unit
-class TestClassifyPlaywrightErrorDetachedFromDom:
-    """
-    Sprint 6A — classifier-only scope (see LEARNINGS.md "Sprint 6
-    (pre-coding)"). These samples are HAND-CRAFTED against Playwright's
-    documented actionability-check vocabulary, not yet captured from a
-    real componentRemount.jsx run — same epistemic status Sprint 2's
-    original classifier samples had before Sprint 4's live run corrected
-    the fill()/click() gap above. Expect these to need a similar
-    correction pass once Sprint 6A is actually run live against Chaos
-    App; that correction, if needed, belongs in LEARNINGS.md as its own
-    entry, not a silent edit here.
-    """
-
-    def test_not_attached_to_the_dom_is_detached_from_dom(self):
-        error = PlaywrightTimeout(
-            "Locator.click: Timeout 10000ms exceeded.\n"
-            "Call log:\n"
-            "  - waiting for locator(\"[data-testid='btn-login']\")\n"
-            "  - locator resolved to <button>Log in</button>\n"
-            "  - attempting click action\n"
-            "  - element is not attached to the DOM\n"
-            "  - retrying click action"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.DETACHED_FROM_DOM
-
-    def test_was_detached_from_the_dom_phrasing_is_also_detached_from_dom(self):
-        # Guards against over-fitting to one exact phrase — Playwright's
-        # own wording for this class of failure isn't perfectly
-        # consistent across versions/actions, so the classifier checks
-        # a small set of substrings, not one exact string.
-        error = PlaywrightTimeout(
-            "Locator.click: Timeout 10000ms exceeded.\n"
-            "Call log:\n"
-            "  - waiting for locator(\"[data-testid='btn-login']\")\n"
-            "  - element was detached from the DOM, retrying"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.DETACHED_FROM_DOM
-
-    def test_detached_substring_wins_over_generic_waiting_for_locator(self):
-        # The critical ordering case: a detached-mid-action message ALSO
-        # contains "waiting for locator" (Playwright logs that for every
-        # action, detached or not) — the classifier must not fall
-        # through to the generic SELECTOR_NOT_FOUND branch just because
-        # that phrase is present too. Detachment is the more specific,
-        # and correct, signal here.
-        error = PlaywrightTimeout(
-            "Locator.click: Timeout 10000ms exceeded.\n"
-            "Call log:\n"
-            "  - waiting for locator(\"[data-testid='btn-login']\")\n"
-            "  - locator resolved to <button>Log in</button>\n"
-            "  - element is not attached to the DOM"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.DETACHED_FROM_DOM
-
-    def test_plain_selector_not_found_message_is_unaffected(self):
-        # Regression guard: adding DETACHED_FROM_DOM classification must
-        # not change behavior for the existing, already-verified
-        # SELECTOR_NOT_FOUND case (no "not attached"-style substring
-        # present at all).
-        error = PlaywrightTimeout(
-            "Locator.fill: Timeout 30000ms exceeded.\n"
-            "Call log:\n"
-            "  - waiting for locator(\"[data-testid='username']\")"
-        )
-        result = classify_playwright_error(error)
-        assert result == FailureType.SELECTOR_NOT_FOUND
