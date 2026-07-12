@@ -4,10 +4,11 @@ Abstract base class for all LLM providers.
 Pattern mirrors defect-pilot — swap provider via env var, zero code changes.
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
+from phoenix.healing.actions import HealingAction
 
 
 @dataclass
@@ -31,16 +32,6 @@ class HealingContext:
 
 
 @dataclass
-class HealingProposal:
-    """Structured LLM response — always JSON under the hood."""
-    proposed_selector: str
-    confidence: float
-    reasoning: str
-    alternative_selectors: list = field(default_factory=list)
-    raw_response: str = ""
-
-
-@dataclass
 class ProviderResult:
     """
     Neutral metadata about a single analyze_failure() call — tokens and
@@ -55,8 +46,14 @@ class ProviderResult:
     for output but prompt_eval_count for input — both present in
     practice, but the field stays optional so a provider that genuinely
     can't report one doesn't have to fake a number).
+
+    Sprint 6B (decision): `action: HealingAction` replaces the old
+    `proposal: HealingProposal` — see phoenix/healing/actions.py. Today,
+    every real provider still only ever produces a SelectorReplacement;
+    Healer explicitly rejects anything else rather than assuming it's
+    always a selector (see healer.py).
     """
-    proposal: HealingProposal
+    action: HealingAction
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     elapsed_ms: Optional[int] = None
@@ -66,10 +63,10 @@ class BaseProvider(ABC):
     @abstractmethod
     def analyze_failure(self, context: HealingContext) -> ProviderResult:
         """
-        Given failure context, propose a healed selector. Returns a
-        ProviderResult wrapping the HealingProposal alongside neutral
-        token/timing metadata — NOT just the proposal alone, since
-        Sprint 5's HealingBudget needs that metadata to enforce limits.
+        Given failure context, propose a fix. Returns a ProviderResult
+        wrapping a HealingAction alongside neutral token/timing
+        metadata — NOT just the action alone, since Sprint 5's
+        HealingBudget needs that metadata to enforce limits.
         """
         pass
 

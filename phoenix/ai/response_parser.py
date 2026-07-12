@@ -1,11 +1,11 @@
 """
 response_parser.py
 
-Parses raw LLM text output into a HealingProposal. Kept separate from the
-HTTP/provider plumbing so parsing logic can be tested and hardened
-independently — this is the piece most likely to need iteration as we see
-real model output (see LEARNINGS.md Sprint 3 model selection note: even
-llama3.2 isn't guaranteed to return clean JSON every time).
+Parses raw LLM text output into a SelectorReplacement. Kept separate
+from the HTTP/provider plumbing so parsing logic can be tested and
+hardened independently — this is the piece most likely to need iteration
+as we see real model output (see LEARNINGS.md Sprint 3 model selection
+note: even llama3.2 isn't guaranteed to return clean JSON every time).
 
 Defensive by design:
 - strips markdown code fences (```json ... ``` or ``` ... ```) if present
@@ -13,19 +13,25 @@ Defensive by design:
 - falls back to a zero-confidence proposal (never crashes the pipeline)
   if parsing fails entirely — a malformed response should look like
   "the model wasn't confident," not like a Python exception in Sprint 4/5
+
+Sprint 6B (decision): returns SelectorReplacement, not the old
+HealingProposal — this parser is, and has only ever been, called from
+the FailureCategory.LOCATOR_RESOLUTION path (see prompt_templates.py),
+so the return type just moved, field names and defensive behavior are
+unchanged.
 """
 import json
 import re
 
-from phoenix.ai.base_provider import HealingProposal
+from phoenix.healing.actions import SelectorReplacement
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def parse_healing_response(raw_response: str) -> HealingProposal:
+def parse_healing_response(raw_response: str) -> SelectorReplacement:
     """
-    Best-effort parse of raw LLM text into a HealingProposal.
+    Best-effort parse of raw LLM text into a SelectorReplacement.
     Never raises — a response that can't be parsed becomes a
     zero-confidence proposal instead, so Safe Mode (Sprint 4) can
     legitimately reject it via the normal confidence-threshold path
@@ -57,7 +63,7 @@ def parse_healing_response(raw_response: str) -> HealingProposal:
     if not isinstance(alternatives, list):
         alternatives = []
 
-    return HealingProposal(
+    return SelectorReplacement(
         proposed_selector=proposed_selector,
         confidence=confidence,
         reasoning=str(reasoning),
@@ -91,14 +97,14 @@ def _extract_json_text(raw_response: str):
     return None
 
 
-def _fallback_proposal(raw_response: str, reason: str) -> HealingProposal:
+def _fallback_proposal(raw_response: str, reason: str) -> SelectorReplacement:
     """
     A parse failure is real information, not a crash — surfaced as a
     zero-confidence proposal so downstream Safe/Autonomous Mode logic
     (Sprint 4/5) can treat it the same way as "model wasn't sure,"
     which is honestly what it usually means in practice.
     """
-    return HealingProposal(
+    return SelectorReplacement(
         proposed_selector="",
         confidence=0.0,
         reasoning=f"Failed to parse LLM response: {reason}",

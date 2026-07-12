@@ -12,6 +12,10 @@ auto-rejected BEFORE asking the human to review it.
 Autonomous Mode tests (Sprint 5) cover the three-stage gate: budget
 check before calling the LLM, lifecycle timing, and confidence threshold
 — plus confirm budget consumption happens even when an attempt fails.
+
+Sprint 6B (decision) — HealingAction migration: HealingProposal replaced
+by SelectorReplacement throughout; ProviderResult.proposal replaced by
+ProviderResult.action.
 """
 import json
 
@@ -19,8 +23,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from phoenix.ai.base_provider import HealingContext, HealingProposal, ProviderResult
+from phoenix.ai.base_provider import HealingContext, ProviderResult
 from phoenix.collector.failure_classifier import FailureCategory
+from phoenix.healing.actions import SelectorReplacement
 from phoenix.healing.autonomous_policy import AutonomousPolicy
 from phoenix.healing.healer import (
     Healer,
@@ -69,7 +74,7 @@ class TestHealerSafeMode:
         # Simulates response_parser.py's _fallback_proposal() output —
         # exactly what a truncated/malformed LLM response produces.
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="",
                 confidence=0.0,
                 reasoning="Failed to parse LLM response: JSON parse error",
@@ -93,11 +98,11 @@ class TestHealerSafeMode:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             "phoenix.healing.healer.request_human_review",
-            lambda context, proposal: True,
+            lambda context, action: True,
         )
         healer = _make_healer(healing_mode="safe")
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="[data-testid='btn-login-x1y2']",
                 confidence=0.15,
                 reasoning="Low confidence guess based on partial match",
@@ -109,6 +114,20 @@ class TestHealerSafeMode:
         result = healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
         assert result == "[data-testid='btn-login-x1y2']"
 
+    def test_unsupported_action_type_is_rejected_loudly(self, tmp_path, monkeypatch):
+        # New in Sprint 6B: a provider returning anything other than
+        # SelectorReplacement must fail loudly, not crash on a missing
+        # attribute or silently pretend it's a selector fix.
+        monkeypatch.chdir(tmp_path)
+        from phoenix.healing.actions import ActionabilityStrategy
+        healer = _make_healer(healing_mode="safe")
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(confidence=0.9, reasoning="not implemented yet")
+        )
+
+        with pytest.raises(HealingRejectedError, match="does not yet support"):
+            healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
+
 
 @pytest.mark.unit
 class TestHealerAutonomousMode:
@@ -117,7 +136,7 @@ class TestHealerAutonomousMode:
         policy = AutonomousPolicy(min_confidence=0.75)
         healer = _make_healer(healing_mode="autonomous", policy=policy)
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="[data-testid='btn-login-4t64']",
                 confidence=0.95,
                 reasoning="Found matching base name with rotated suffix",
@@ -144,7 +163,7 @@ class TestHealerAutonomousMode:
         policy = AutonomousPolicy(min_confidence=0.75)
         healer = _make_healer(healing_mode="autonomous", policy=policy)
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="[data-testid='btn-login-4t64']",
                 confidence=0.95,
                 reasoning="Found matching base name with rotated suffix",
@@ -177,7 +196,7 @@ class TestHealerAutonomousMode:
         policy = AutonomousPolicy(min_confidence=0.90)
         healer = _make_healer(healing_mode="autonomous", policy=policy)
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="[data-testid='btn-login-4t64']",
                 confidence=0.60,  # below the 0.90 threshold
                 reasoning="Plausible but not certain match",
@@ -226,7 +245,7 @@ class TestHealerAutonomousMode:
         policy = AutonomousPolicy(max_attempts_total=2, min_confidence=0.5)
         healer = _make_healer(healing_mode="autonomous", policy=policy)
         healer.provider.analyze_failure.return_value = ProviderResult(
-            proposal=HealingProposal(
+            action=SelectorReplacement(
                 proposed_selector="[data-testid='x']",
                 confidence=0.9,
                 reasoning="ok",
@@ -241,3 +260,18 @@ class TestHealerAutonomousMode:
         # Third DIFFERENT selector — budget is still exhausted globally.
         with pytest.raises(HealingLimitExceededError):
             healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
+
+    def test_unsupported_action_type_still_consumes_budget(self, tmp_path, monkeypatch):
+        # Mirrors the Safe Mode version above: an unsupported action type
+        # still counts as a real attempt (a real analyze_failure() call
+        # happened, consuming tokens) even though Healer can't act on it.
+        monkeypatch.chdir(tmp_path)
+        from phoenix.healing.actions import ActionabilityStrategy
+        healer = _make_healer(healing_mode="autonomous")
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(confidence=0.9, reasoning="not implemented yet")
+        )
+
+        with pytest.raises(HealingRejectedError, match="does not yet support"):
+            healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
+        assert healer.budget.attempts_total == 1

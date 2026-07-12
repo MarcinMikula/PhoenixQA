@@ -2762,13 +2762,110 @@ inert — adding the new model alongside the old one changed nothing about
 existing behavior, exactly as intended for a vertical slice that isn't
 supposed to touch downstream code yet.
 
-**Next concrete step, not yet started:** switch `ContextCollector` and
-`HealingContext` over to the new model (flat `category`/
-`actionability_reason` fields, per the decision above), at which point
-the deprecated `FailureType`/`classify_playwright_error()` block gets
-deleted from `failure_classifier.py` entirely — no compatibility
-adapter kept permanently, consistent with the "breaking change
-internally" decision already made.
+### [Implementation] `ContextCollector`/`HealingContext` switched over to the new model
+
+Second vertical slice, immediately following the classifier-only one
+above. `HealingContext` (`base_provider.py`) now carries `category:
+FailureCategory` and `actionability_reason: Optional[ActionabilityReason]`
+directly, replacing `failure_type: FailureType`. `ContextCollector.collect()`
+calls `parse_playwright_call_log()` and routes on
+`FailureCategory.LOCATOR_RESOLUTION`; `ACTIONABILITY` and the dormant
+`REFERENCE` category still raise `NotImplementedError`, now naming
+`actionability_collector.py` as the next planned file rather than
+referencing the old enum. `decision_logger.py` writes `failure_category`
++ `actionability_reason` + a derived `failure_label`
+(`"actionability:stable"`-shaped, or just the category name when there's
+no reason) — exactly the format decided in Sprint 6B.
+
+Every real consumer of the old model was found by grepping the whole
+codebase for `failure_type`/`FailureType` beforehand, not guessed at:
+`base_provider.py`, `context_collector.py`, `decision_logger.py`, plus
+three test files (`test_context_collector.py` — the old
+`TestClassifyPlaywrightError*` classes removed outright, fully
+superseded by `test_failure_classifier.py`; `test_healer.py` and
+`test_decision_logger.py` — construction helpers updated to the new
+fields). One new test added
+(`test_actionability_context_produces_combined_failure_label`),
+confirming the `"category:reason"` log format actually gets written.
+
+**Verified: 59/59 full unit suite passes at the time** (66 before this
+slice − 8 removed deprecated classifier tests + 1 new `failure_label`
+test = 59). Zero regressions in `test_healer.py`, `test_base_page.py`,
+`test_autonomous_policy.py`, or any other file that doesn't touch the
+classifier directly.
+
+**Bug found by re-verification, not by a failing test:** the commit for
+this slice deleted `FailureType`/`classify_playwright_error()` from
+`failure_classifier.py` in the file handed off for review, but the
+version actually applied and committed still contained the old,
+now-fully-unused `FailureType` class as dead code — nothing imported it
+anymore (confirmed by a fresh grep across the whole codebase after the
+fact), so every test still passed, and the omission went unnoticed for
+two full commits. Caught only when returning to this section of
+`LEARNINGS.md` to write the still-missing implementation entry and
+finding the file didn't match what was already documented as done —
+same category of bug as Sprint 2's rotation-suffix regex and Sprint 5's
+hardcoded log mode: looks completely fine by every test that runs, and
+only surfaces by actually checking the artifact against what was
+claimed about it, not by any test failing. Fixed in the same change that
+adds this entry — the dead `FailureType` block is now actually gone.
+**Practical lesson, worth naming explicitly:** "the tests pass" was never
+sufficient evidence that a deletion in a handed-off file was actually
+applied — a positive check (grep confirming the thing is really gone) is
+categorically different from an absence of test failures, and this
+project has now hit that gap in coverage more than once.
+
+### [Implementation] `HealingAction` hierarchy — narrow, behavior-preserving migration
+
+Third vertical slice. Following a review of the draft plan, scoped
+deliberately narrow: introduce `HealingAction`/`SelectorReplacement`/
+`ActionabilityStrategy`/`RetryStrategy` (new file,
+`phoenix/healing/actions.py`) and migrate the existing
+`FailureCategory.LOCATOR_RESOLUTION` path from `HealingProposal`/
+`ProviderResult.proposal` to `SelectorReplacement`/`ProviderResult.action`
+— without implementing `ActionabilityCollector` or any actionability
+recovery behavior yet. `HealingProposal` is deleted, not aliased —
+consistent with the "no permanent compatibility adapter" pattern already
+applied twice in this sprint (the classifier slice, the `ContextCollector`
+slice), rather than introducing a fresh temporary-alias pattern only to
+remove it again next commit.
+
+Every real consumer, found by grep, updated in the same change:
+`base_provider.py` (`ProviderResult.action: HealingAction`),
+`response_parser.py` (returns `SelectorReplacement`, same field names
+and defensive parsing behavior, just a new return type),
+`ollama_provider.py` (`ProviderResult(action=..., ...)`),
+`decision_logger.py` (`action: HealingAction` parameter, still reading
+`SelectorReplacement`-specific fields directly — intentionally not
+written generically yet, since nothing else reaches this function today;
+generalizing it is real future work, not something to guess the shape of
+now), `safe_mode.py` (`request_human_review(context, action)`), and
+`healer.py` (`result.action` throughout both `_attempt_heal_safe` and
+`_attempt_heal_autonomous`).
+
+**New, deliberate behavior, not just a rename:** both `Healer` methods
+now check `isinstance(action, SelectorReplacement)` immediately after
+receiving `result.action`, before touching any selector-specific field,
+and raise `HealingRejectedError` naming the actual unsupported type if
+the check fails. Today this is purely defensive — no provider produces
+anything but `SelectorReplacement` — but it means a future
+`ActionabilityStrategy` reaching `Healer` before it's actually wired up
+fails loudly with a clear message, rather than crashing on a missing
+`.proposed_selector` attribute or silently being treated as a selector
+fix. Two new tests protect this directly
+(`test_unsupported_action_type_is_rejected_loudly` for Safe Mode,
+`test_unsupported_action_type_still_consumes_budget` for Autonomous
+Mode — the latter confirming a real attempt still counts against budget
+even when Healer can't act on the result).
+
+**Verified: 61/61 full unit suite passes** (59 before this slice + 2 new
+unsupported-action-type tests = 61, confirmed by an actual run).
+
+**What this does NOT include, deliberately, per the reviewed scope:** no
+`ActionabilityCollector`, no `actionability_prompt.py`, no real
+retry/wait/dismiss-overlay logic, no Chaos App changes. The goal of this
+slice was narrowly "the pipeline stops being semantically tied to
+`proposed_selector`" — nothing about actionability recovery itself.
 
 ---
 
@@ -2804,8 +2901,10 @@ internally" decision already made.
 - Sprint 6B/C/D as originally scoped (`DetachedFromDomCollector`, `detached_prompt.py`, `RetryStrategy` end-to-end): PAUSED — see "Sprint 6A conclusion" above. Four escalating reproduction attempts found no `DETACHED_FROM_DOM` against this project's Locator-based interaction pattern; consistent with Playwright's documented auto-retry behavior on mid-action detachment, not confirmed as a mechanism deficiency in `componentRemount.jsx`
 - Sprint 6B pre-coding diagnostics: DONE — five actionability reasons (`visible`/`enabled`/`editable`/`stable`/`receives events`) and the locator-resolution boundary confirmed empirically via real production logs plus six throwaway diagnostic tests. Superseded the plan to simply "choose NOT_VISIBLE or TIMEOUT_WAITING" — evidence points toward a two-stage model (selector resolution vs. actionability reason) rather than a flat choice between the two original enum members. See `LEARNINGS.md` Sprint 6B and `docs/gaps.md` Gap #5/#12
 - Sprint 6B model decision: DONE — `FailureCategory` (`LOCATOR_RESOLUTION`/`ACTIONABILITY`/`REFERENCE`) + `ActionabilityReason` (5 values) + `ClassifiedFailure` adopted as the target design, replacing the flat `FailureType` enum internally. `HealingContext` gains `category`/`actionability_reason` flat fields; `HealingAction` gains one merged `ActionabilityStrategy` (with a `strategy: ActionabilityStrategyKind` field) replacing the separately-declared `WaitStrategy`/`VisibilityStrategy`. `ContextCollector` becomes three collectors (`locator_resolution_collector.py`, `actionability_collector.py`, `reference_collector.py`, the last dormant). See `LEARNINGS.md` "Sprint 6B (decision)"
-- Sprint 6B implementation: DONE (classifier only) — `classify_playwright_error()` → `parse_playwright_call_log()` rewrite is live in `phoenix/collector/failure_classifier.py`, verified against 8 real captured call logs (12 unit tests, 66/66 full suite green). Old `FailureType`/`classify_playwright_error()` deliberately kept alongside, marked deprecated, not yet removed
-- Sprint 6B implementation, next step (NOT started): switch `ContextCollector`/`HealingContext` to the new `category`/`actionability_reason` fields, then delete the deprecated `FailureType` block from `failure_classifier.py` entirely — no permanent compatibility adapter, per the "breaking change internally" decision
+- Sprint 6B implementation: DONE (classifier) — `classify_playwright_error()` → `parse_playwright_call_log()` rewrite is live in `phoenix/collector/failure_classifier.py`, verified against 8 real captured call logs (12 unit tests). Old `FailureType`/`classify_playwright_error()` fully removed (a first pass left it as unused dead code by mistake — caught by re-verification, not by any failing test — see "Sprint 6B (implementation)" for the full account)
+- Sprint 6B implementation: DONE (`ContextCollector`/`HealingContext`) — switched to `category`/`actionability_reason` fields; `decision_logger.py` writes `failure_category`/`actionability_reason`/`failure_label`
+- Sprint 6B implementation: DONE (`HealingAction`) — `phoenix/healing/actions.py` introduces `HealingAction`/`SelectorReplacement`/`ActionabilityStrategy`/`ActionabilityStrategyKind`/`RetryStrategy`; `ProviderResult.proposal` → `ProviderResult.action`; `Healer` explicitly rejects any non-`SelectorReplacement` action rather than assuming one. Behavior-preserving for the live `LOCATOR_RESOLUTION` path — no actionability recovery implemented yet. 61/61 full unit suite verified
+- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `ContextCollector` router split (`locator_resolution_collector.py` extraction, no behavior change), (2) `ActionabilityCollector` — minimal context for one reason first (candidates: `RECEIVES_EVENTS` or `STABLE`), (3) `actionability_prompt.py` + `ActionabilityStrategy` parsing end-to-end
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`

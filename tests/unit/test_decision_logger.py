@@ -14,7 +14,8 @@ import json
 
 import pytest
 
-from phoenix.ai.base_provider import HealingContext, HealingProposal
+from phoenix.ai.base_provider import HealingContext
+from phoenix.healing.actions import SelectorReplacement
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.decision_logger import log_decision
 
@@ -43,7 +44,7 @@ def _sample_actionability_context():
 
 
 def _sample_proposal():
-    return HealingProposal(
+    return SelectorReplacement(
         proposed_selector="[data-testid='username-x7f2']",
         confidence=0.92,
         reasoning="Same form position, matching data-testid prefix",

@@ -1,12 +1,11 @@
 """
 failure_classifier.py
 
-Resolves Gap #5 (LEARNINGS.md): "no failure classifier component" —
-originally, and now resolves it a second time under a redesigned model
-(see LEARNINGS.md "Sprint 6B (decision)").
+Resolves Gap #5 (LEARNINGS.md). Current, live model — see LEARNINGS.md
+"Sprint 6B (decision)" for the full reasoning trail behind every choice
+below.
 
-HISTORY, for context on why two classification systems briefly coexist
-in this file:
+HISTORY, for context on how this file arrived at its current shape:
 
 - Sprint 2: classify_playwright_error() + FailureType, SELECTOR_NOT_FOUND
   only fully classified.
@@ -18,27 +17,19 @@ in this file:
   plus real healing_decisions.log data established that Playwright's
   call log is genuinely two-stage — "did the locator resolve at all,"
   then, if so, one of five concrete actionability reasons — which the
-  flat FailureType enum never captured. See LEARNINGS.md "Sprint 6B
-  (pre-coding)" for the full evidence trail.
+  flat FailureType enum never captured.
 - Sprint 6B (decision): FailureCategory + ActionabilityReason +
-  ClassifiedFailure adopted as the replacement model. See LEARNINGS.md
-  "Sprint 6B (decision)" for the full reasoning, including why the first
-  category is named LOCATOR_RESOLUTION rather than SELECTOR (Gap #12),
-  and why REFERENCE stays in the model as a dormant category (Gap #4).
-
-TRANSITIONAL STATE (this file, this change): parse_playwright_call_log()
-is the new, live entry point — fully implemented and unit tested against
-REAL captured Playwright output (not hand-crafted samples; see
-tests/unit/test_failure_classifier.py for where each sample came from).
-classify_playwright_error() + FailureType are LEFT IN PLACE, unchanged,
-because base_provider.py's HealingContext and context_collector.py still
-depend on them — removing them now would break currently-working code
-before its replacement (the collector-layer vertical slice) exists. Per
-LEARNINGS.md "Sprint 6B (decision)": no permanent FailureType
-compatibility adapter is intended — this is a deliberate, temporary
-coexistence for exactly one more vertical slice, not the final shape.
-Marked DEPRECATED below; remove once ContextCollector/HealingContext
-switch over.
+  ClassifiedFailure adopted as the replacement model, including why the
+  first category is named LOCATOR_RESOLUTION rather than SELECTOR
+  (Gap #12), and why REFERENCE stays in the model as a dormant category
+  (Gap #4).
+- Sprint 6B (implementation): parse_playwright_call_log() verified
+  against 8 real captured call logs, then ContextCollector/HealingContext
+  switched over. The old FailureType/classify_playwright_error() model —
+  briefly kept alongside this one for exactly one vertical slice, per
+  this project's own sequencing discipline — is fully removed here, no
+  compatibility adapter kept, per the "breaking change internally"
+  decision.
 
 KNOWN, DOCUMENTED LIMITS OF THIS PARSER (see docs/gaps.md for the full
 entries — not repeated in full here to avoid the two copies drifting):
@@ -60,10 +51,6 @@ from typing import Optional
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-
-# =============================================================================
-# NEW MODEL (Sprint 6B decision) — live, this is what new code should use.
-# =============================================================================
 
 class FailureCategory(Enum):
     """
@@ -178,18 +165,16 @@ def _extract_blocking_element(raw_message: str) -> Optional[str]:
 
 def parse_playwright_call_log(error: Exception) -> ClassifiedFailure:
     """
-    Single entry point for the new model. Given the exception Playwright
+    Single entry point for classification. Given the exception Playwright
     raised, returns a ClassifiedFailure describing what actually
     happened, based on the STRUCTURE of the call log — not a flat
-    substring check on the whole message (see module docstring: this is
-    a genuine rewrite, not a patched classify_playwright_error()).
+    substring check on the whole message.
 
     Algorithm, confirmed against real Playwright output in Sprint 6B
     (see tests/unit/test_failure_classifier.py):
 
-    1. Not a Playwright TimeoutError at all -> UNKNOWN. Out of scope,
-       same as the old classifier — network errors, app exceptions
-       surfaced through the page, etc.
+    1. Not a Playwright TimeoutError at all -> UNKNOWN. Out of scope —
+       network errors, app exceptions surfaced through the page, etc.
     2. Reference substrings present (dormant category, Gap #4) -> REFERENCE.
     3. No "locator resolved to" anywhere in the message -> LOCATOR_RESOLUTION.
        Playwright never got past resolving the locator. WHY it never
@@ -199,11 +184,10 @@ def parse_playwright_call_log(error: Exception) -> ClassifiedFailure:
        found a real element; the action itself could not proceed. Which
        of the five reasons is determined by matching the specific
        "element is not X" substring, or the receives_events marker
-       (checked first, since real captures show it appears alongside
-       "element is visible, enabled and stable" — the other substrings
-       would falsely NOT match here anyway, but checking receives_events
+       (checked first — real captures show it appears alongside
+       "element is visible, enabled and stable", so checking it
        explicitly first keeps the intent obvious rather than relying on
-       that coincidence).
+       the other substrings simply not matching).
     5. Locator resolved but no recognized reason substring matched ->
        UNKNOWN, with locator_resolved=True preserved. Better to say
        "don't know" than to guess at a sixth condition this parser
@@ -258,46 +242,3 @@ def parse_playwright_call_log(error: Exception) -> ClassifiedFailure:
         locator_resolved=True,
         raw_message=raw_message,
     )
-
-
-# =============================================================================
-# OLD MODEL (Sprint 2-6A) — DEPRECATED, kept only until ContextCollector and
-# HealingContext switch over to the new model above. Do not add new code
-# against FailureType or classify_playwright_error(); use
-# parse_playwright_call_log() / FailureCategory / ActionabilityReason instead.
-# =============================================================================
-
-class FailureType(Enum):
-    """
-    DEPRECATED — see module docstring. Kept only so base_provider.py's
-    HealingContext and context_collector.py keep working until the next
-    vertical slice replaces them.
-    """
-    SELECTOR_NOT_FOUND = "selector_not_found"
-    DETACHED_FROM_DOM = "detached_from_dom"
-    NOT_VISIBLE = "not_visible"
-    TIMEOUT_WAITING = "timeout_waiting"
-    UNKNOWN = "unknown"
-
-
-_DETACHED_SUBSTRINGS = _REFERENCE_SUBSTRINGS  # same strings, old name
-
-
-def classify_playwright_error(error: Exception, page=None, selector: str = None) -> FailureType:
-    """
-    DEPRECATED — see module docstring. Behavior unchanged from Sprint 6A;
-    not touched by the Sprint 6B model change. Superseded by
-    parse_playwright_call_log() above.
-    """
-    if not isinstance(error, PlaywrightTimeout):
-        return FailureType.UNKNOWN
-
-    message = str(error).lower()
-
-    if any(substr in message for substr in _DETACHED_SUBSTRINGS):
-        return FailureType.DETACHED_FROM_DOM
-
-    if "waiting for locator" in message:
-        return FailureType.SELECTOR_NOT_FOUND
-
-    return FailureType.UNKNOWN

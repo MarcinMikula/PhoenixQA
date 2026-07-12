@@ -13,10 +13,12 @@ the terminal — the test will hang with no visible explanation. This is
 documented here AND in the README/LEARNINGS so it isn't a confusing
 surprise on first run.
 """
-from phoenix.ai.base_provider import HealingContext, HealingProposal
+from phoenix.ai.base_provider import HealingContext
+from phoenix.healing.actions import SelectorReplacement
 
 
-def request_human_review(context: HealingContext, proposal: HealingProposal) -> bool:
+
+def request_human_review(context: HealingContext, action: SelectorReplacement) -> bool:
     """
     Displays the full healing decision context and asks the human to
     accept or reject. Returns True if accepted, False if rejected.
@@ -43,14 +45,14 @@ def request_human_review(context: HealingContext, proposal: HealingProposal) -> 
     print(f"Broken selector:   {context.broken_selector}")
     print(f"Error:             {context.error_message}")
     print("-" * 70)
-    print(f"Proposed selector: {proposal.proposed_selector}")
-    print(f"Confidence:        {proposal.confidence:.0%}")
-    print(f"Reasoning:         {proposal.reasoning}")
-    if proposal.alternative_selectors:
-        print(f"Alternatives:      {', '.join(proposal.alternative_selectors)}")
+    print(f"Proposed selector: {action.proposed_selector}")
+    print(f"Confidence:        {action.confidence:.0%}")
+    print(f"Reasoning:         {action.reasoning}")
+    if action.alternative_selectors:
+        print(f"Alternatives:      {', '.join(action.alternative_selectors)}")
     print("=" * 70)
 
-    if not proposal.proposed_selector:
+    if not action.proposed_selector:
         print(
             "⚠️  No usable selector was proposed (LLM response could not be "
             "parsed). Nothing to accept — auto-rejecting. The original "

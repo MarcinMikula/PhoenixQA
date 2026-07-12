@@ -9,28 +9,29 @@ guessing at structure twice.
 
 Format: JSON Lines (one JSON object per line) — human-readable enough to
 `cat` and skim during a test run review, but still structured enough to
-mechanically parse later when Sprint 6 migrates this into SQLite. Per
-direct discussion: "case z błędem miał fajnie rozbudowany log, aby
-użytkownik po zakończonym teście mógł dobrze prześledzić, ocenić
-diagnozę/naprawę" — every field needed for that post-hoc review is
-captured here, including the raw LLM response text (essential for
-diagnosing parse failures — without it, a "JSON parse error" message
-alone gives no way to see WHAT the model actually returned).
+mechanically parse later when Sprint 6 migrates this into SQLite.
 
 Sprint 6B (decision): failure_type (a single flat string) is replaced by
 failure_category + actionability_reason (matching HealingContext's new
 fields) plus a derived, denormalized failure_label
 (e.g. "actionability:stable") purely for human/dashboard readability —
-not a second source of truth. Existing log entries written under the old
-"failure_type" key are left as historical record, unmigrated; no
-retention/migration policy is defined for this file regardless (see
-docs/known-limitations.md).
+not a second source of truth.
+
+Sprint 6B (decision) — HealingAction migration: the `proposal` parameter
+is renamed `action` and typed as `HealingAction` — today, always a
+SelectorReplacement, since Healer guards against any other HealingAction
+subtype before ever calling this function (see healer.py). Field access
+below (`action.proposed_selector` etc.) is intentionally
+SelectorReplacement-specific for that reason, not written generically —
+generalizing this is a real, future task once ActionabilityStrategy
+actually reaches this function, not something to guess at now.
 """
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from phoenix.ai.base_provider import HealingContext, HealingProposal
+from phoenix.ai.base_provider import HealingContext
+from phoenix.healing.actions import HealingAction
 
 DEFAULT_LOG_PATH = "healing_decisions.log"
 
@@ -50,7 +51,7 @@ def _failure_label(context: HealingContext) -> str:
 
 def log_decision(
     context: HealingContext,
-    proposal: HealingProposal,
+    action: HealingAction,
     accepted: bool,
     mode: str = "safe",
     provider: str = None,
@@ -69,15 +70,12 @@ def log_decision(
     mode must be passed explicitly by the caller ("safe" or "autonomous")
     — caught via a real live run: this previously hardcoded "safe"
     unconditionally, so every Autonomous Mode decision was silently
-    mislabeled in the log. Harmless-looking in isolation, but would have
-    quietly corrupted any future Safe-vs-Autonomous analysis (Sprint 6/7
-    Healing History, Sprint 8 benchmark) built on this field.
+    mislabeled in the log.
 
     provider/elapsed_ms/input_tokens/output_tokens/attempt are all
     optional and default to None — Safe Mode call sites that don't have
-    ProviderResult timing/token data on hand (or callers from before this
-    was added) still log a valid entry, just with these fields null
-    rather than fabricated.
+    ProviderResult timing/token data on hand still log a valid entry,
+    just with these fields null rather than fabricated.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -88,11 +86,11 @@ def log_decision(
         "actionability_reason": context.actionability_reason.value if context.actionability_reason else None,
         "failure_label": _failure_label(context) if context.category else None,
         "original_code": context.original_code,
-        "proposed_selector": proposal.proposed_selector,
-        "confidence": proposal.confidence,
-        "reasoning": proposal.reasoning,
-        "alternative_selectors": proposal.alternative_selectors,
-        "raw_response": proposal.raw_response,
+        "proposed_selector": action.proposed_selector,
+        "confidence": action.confidence,
+        "reasoning": action.reasoning,
+        "alternative_selectors": action.alternative_selectors,
+        "raw_response": action.raw_response,
         "accepted": accepted,
         "mode": mode,
         "provider": provider,

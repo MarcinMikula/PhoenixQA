@@ -18,6 +18,8 @@ import time
 import httpx
 
 from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
+
+from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
 from phoenix.ai.prompt_templates import SYSTEM_PROMPT, build_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
 from config.settings import Settings
@@ -87,14 +89,14 @@ class OllamaProvider(BaseProvider):
             f"[Ollama] Response received ({len(raw_content)} chars) in {elapsed_ms}ms"
         )
 
-        proposal = parse_healing_response(raw_content)
+        action = parse_healing_response(raw_content)
 
         # Ollama's /api/generate reports prompt_eval_count (input) and
         # eval_count (output) when available — not guaranteed on every
         # response shape, hence .get() with no default rather than
         # assuming the keys exist.
         return ProviderResult(
-            proposal=proposal,
+            action=action,
             input_tokens=data.get("prompt_eval_count"),
             output_tokens=data.get("eval_count"),
             elapsed_ms=elapsed_ms,

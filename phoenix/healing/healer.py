@@ -21,12 +21,23 @@ retry didn't raise). It does NOT judge whether the resulting application
 behavior was business-correct (e.g. "did login actually succeed"). That
 stays the test's own responsibility, same as Safe Mode, same as
 Playwright's own click()/fill() never judging business outcomes either.
+
+Sprint 6B (decision) — HealingAction migration: `result.proposal` is now
+`result.action`, typed as `HealingAction`. Only `SelectorReplacement` is
+implemented end-to-end today — `ActionabilityStrategy`/`RetryStrategy`
+are declared (phoenix/healing/actions.py) but no provider produces them
+yet, since `ContextCollector` only builds a `HealingContext` for
+`FailureCategory.LOCATOR_RESOLUTION`. Both `_attempt_heal_safe` and
+`_attempt_heal_autonomous` explicitly reject any non-`SelectorReplacement`
+action rather than assuming one — a narrow, behavior-preserving refactor,
+not the start of actionability recovery itself.
 """
 from playwright.sync_api import Page
 
 from config.settings import Settings
 from phoenix.ai.provider_factory import get_provider
 from phoenix.collector.context_collector import ContextCollector
+from phoenix.healing.actions import SelectorReplacement
 from phoenix.healing.autonomous_policy import AutonomousPolicy, HealingBudget, HealLifecycleTimer
 from phoenix.healing.decision_logger import log_decision
 from phoenix.healing.safe_mode import request_human_review
@@ -35,12 +46,14 @@ from phoenix.healing.safe_mode import request_human_review
 class HealingRejectedError(Exception):
     """
     Raised when a proposed fix is declined — either by a human (Safe
-    Mode) or by policy (Autonomous Mode: confidence below threshold, or
-    an empty/zero-confidence proposal with nothing to evaluate). The
-    ORIGINAL test failure is what should actually be reported — this
-    exception exists so BasePage can distinguish "healing was attempted
-    and declined" from "healing crashed," and let the original
-    Playwright error surface to pytest rather than this one.
+    Mode), by policy (Autonomous Mode: confidence below threshold, or
+    an empty/zero-confidence proposal with nothing to evaluate), or
+    because the provider returned a HealingAction type Healer doesn't
+    support yet (Sprint 6B onward). The ORIGINAL test failure is what
+    should actually be reported — this exception exists so BasePage can
+    distinguish "healing was attempted and declined" from "healing
+    crashed," and let the original Playwright error surface to pytest
+    rather than this one.
     """
     pass
 
@@ -113,9 +126,20 @@ class Healer:
                 f"broken selector '{broken_selector}': {e}"
             ) from e
 
-        proposal = result.proposal
+        action = result.action
 
-        if not proposal.proposed_selector or proposal.confidence <= 0.0:
+        if not isinstance(action, SelectorReplacement):
+            # Only SelectorReplacement is implemented end-to-end today —
+            # see module docstring. Fail loudly rather than silently
+            # treating an unsupported action as a selector replacement,
+            # which would crash on missing attributes further down.
+            raise HealingRejectedError(
+                f"Healer does not yet support {type(action).__name__} actions "
+                f"for broken selector '{broken_selector}' — only SelectorReplacement "
+                f"is implemented."
+            )
+
+        if not action.proposed_selector or action.confidence <= 0.0:
             # Caught via a real end-to-end run: a parse failure (e.g.
             # truncated JSON) produces a fallback proposal with an empty
             # selector and zero confidence — see response_parser.py's
@@ -126,7 +150,7 @@ class Healer:
             # case is auto-rejected before the human is even asked —
             # there's nothing to review.
             log_decision(
-                context, proposal, accepted=False, mode="safe",
+                context, action, accepted=False, mode="safe",
                 provider=self.settings.ai_provider,
                 elapsed_ms=result.elapsed_ms,
                 input_tokens=result.input_tokens,
@@ -139,9 +163,9 @@ class Healer:
                 f"without prompting, nothing to review."
             )
 
-        accepted = request_human_review(context, proposal)
+        accepted = request_human_review(context, action)
         log_decision(
-            context, proposal, accepted, mode="safe",
+            context, action, accepted, mode="safe",
             provider=self.settings.ai_provider,
             elapsed_ms=result.elapsed_ms,
             input_tokens=result.input_tokens,
@@ -150,11 +174,11 @@ class Healer:
 
         if not accepted:
             raise HealingRejectedError(
-                f"Human rejected proposed fix '{proposal.proposed_selector}' "
+                f"Human rejected proposed fix '{action.proposed_selector}' "
                 f"for broken selector '{broken_selector}'"
             )
 
-        return proposal.proposed_selector
+        return action.proposed_selector
 
     def _attempt_heal_autonomous(self, broken_selector: str, error: Exception, original_code: str) -> str:
         """
@@ -197,16 +221,26 @@ class Healer:
                 f"broken selector '{broken_selector}': {e}"
             ) from e
 
-        proposal = result.proposal
+        action = result.action
         self.budget.record_attempt(
             broken_selector,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
         )
+
+        if not isinstance(action, SelectorReplacement):
+            # Budget is already spent above — a real attempt happened,
+            # even though Healer can't act on this result type yet.
+            raise HealingRejectedError(
+                f"Healer does not yet support {type(action).__name__} actions "
+                f"for broken selector '{broken_selector}' — only SelectorReplacement "
+                f"is implemented."
+            )
+
         log_decision(
             context,
-            proposal,
-            accepted=(proposal.confidence >= self.policy.min_confidence),
+            action,
+            accepted=(action.confidence >= self.policy.min_confidence),
             mode="autonomous",
             provider=self.settings.ai_provider,
             # Full collect+analyze lifecycle, not just the LLM call —
@@ -225,12 +259,12 @@ class Healer:
                 f"exceeding max_time_per_heal_ms ({self.policy.max_time_per_heal_ms}ms)"
             )
 
-        if not proposal.proposed_selector or proposal.confidence < self.policy.min_confidence:
+        if not action.proposed_selector or action.confidence < self.policy.min_confidence:
             raise HealingRejectedError(
-                f"Autonomous policy rejected proposed fix '{proposal.proposed_selector}' "
+                f"Autonomous policy rejected proposed fix '{action.proposed_selector}' "
                 f"for broken selector '{broken_selector}': confidence "
-                f"{proposal.confidence:.2f} below policy threshold "
+                f"{action.confidence:.2f} below policy threshold "
                 f"{self.policy.min_confidence:.2f}"
             )
 
-        return proposal.proposed_selector
+        return action.proposed_selector
