@@ -11,13 +11,15 @@ LEARNINGS.md "Sprint 3 — Decision: separate model for Sprint 3
 verification" for why llava (vision-first, older text architecture) was
 deliberately set aside for this sprint rather than fighting two unknowns
 (prompt architecture + model JSON-reliability) at once.
+
+Sprint 6B (decision): analyze_failure() returns ProviderResult.action
+(a HealingAction, today always a SelectorReplacement), not the old
+ProviderResult.proposal — see phoenix/healing/actions.py.
 """
 import logging
 import time
 
 import httpx
-
-from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
 
 from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
 from phoenix.ai.prompt_templates import SYSTEM_PROMPT, build_user_prompt
@@ -35,13 +37,13 @@ class OllamaProvider(BaseProvider):
 
     def analyze_failure(self, context: HealingContext) -> ProviderResult:
         """
-        Sprint 3 scope: only called for FailureType.SELECTOR_NOT_FOUND —
-        ContextCollector (Sprint 2) doesn't produce a HealingContext for
-        any other failure type yet, so this never has to branch on
-        failure_type itself. That branching point lives in Healer
-        (Sprint 4/5) once other failure types have real prompts to use.
+        Sprint 3 scope: only called for FailureCategory.LOCATOR_RESOLUTION —
+        ContextCollector (Sprint 2/6B) doesn't produce a HealingContext for
+        any other category yet, so this never has to branch on category
+        itself. That branching point lives in Healer (Sprint 4/5) once
+        other categories have real prompts to use.
 
-        Sprint 5: returns ProviderResult, not a bare HealingProposal —
+        Sprint 5: returns ProviderResult, not a bare HealingAction —
         HealingBudget needs the token/timing metadata to enforce limits.
         elapsed_ms measures the full HTTP round-trip, not just the
         model's own reported timing, since that's what actually counts

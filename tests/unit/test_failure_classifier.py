@@ -15,16 +15,15 @@ Sprint 6B's own discovery that Sprint 2's original click() sample never
 matched real output either) — this file exists specifically to not
 repeat that pattern a third time.
 
-Old-model tests for classify_playwright_error()/FailureType are left in
-test_context_collector.py, unchanged, since that function is still live
-(deprecated, not yet removed — see failure_classifier.py's module
-docstring).
+The old classify_playwright_error()/FailureType model this file replaces
+has been fully removed from failure_classifier.py (see LEARNINGS.md
+"Sprint 6B (implementation)") — there is no old-model test file to point
+to anymore; this file is the only classifier test suite now.
 """
 import pytest
 
 from phoenix.collector.failure_classifier import (
     ActionabilityReason,
-    ClassifiedFailure,
     FailureCategory,
     parse_playwright_call_log,
 )
