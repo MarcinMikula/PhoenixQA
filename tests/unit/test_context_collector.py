@@ -1,52 +1,72 @@
 """
 test_context_collector.py
 
-Unit tests for the pieces of ContextCollector that don't need a live
-Playwright page — tokenization is pure string logic and should be
-verified in isolation before trusting it inside the full collect() flow.
+Unit tests for ContextCollector as a thin router — confirms it
+classifies via parse_playwright_call_log() and delegates to
+LocatorResolutionCollector for FailureCategory.LOCATOR_RESOLUTION,
+raising NotImplementedError loudly (not silently) for ACTIONABILITY and
+the dormant REFERENCE category. See LEARNINGS.md "Sprint 6B
+(implementation)" for the router-split decision.
 
-Full collect() behavior (DOM scoring, landmark walking, shadow piercing)
-needs a real Page object — that's covered by an integration test against
-the actual Chaos App, not here. See tests/integration/ for that.
-
-Classifier tests (parse_playwright_call_log / FailureCategory /
-ActionabilityReason) moved to tests/unit/test_failure_classifier.py as
-of Sprint 6B — that file replaces the old TestClassifyPlaywrightError*
-classes that used to live here, since classify_playwright_error()/
-FailureType no longer exist (see LEARNINGS.md "Sprint 6B (decision)").
+Collector-specific logic (tokenization, DOM scoring, landmark walking)
+now lives in tests/unit/test_locator_resolution_collector.py, mirroring
+the phoenix/collector/collectors/ split — this file only tests the
+routing decision, not what any individual collector does.
 """
-import pytest
+from unittest.mock import MagicMock
 
-from phoenix.collector.context_collector import tokenize_selector
+import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+from phoenix.collector.context_collector import ContextCollector
 
 
 @pytest.mark.unit
-class TestTokenizeSelector:
-    def test_data_testid_with_rotation_suffix_strips_suffix(self):
-        # The exact shape selectorRotation.js produces — this is the
-        # primary case the whole function exists for.
-        tokens = tokenize_selector("[data-testid='username-ab12']")
-        assert tokens == ["username"]
+class TestContextCollectorRouting:
+    def test_locator_resolution_delegates_to_locator_resolution_collector(self):
+        page = MagicMock()
+        collector = ContextCollector(page)
+        collector._locator_resolution_collector = MagicMock()
+        collector._locator_resolution_collector.collect.return_value = "sentinel-context"
 
-    def test_id_selector_splits_on_hyphen(self):
-        tokens = tokenize_selector("#btn-login")
-        assert tokens == ["btn", "login"]
+        error = PlaywrightTimeout(
+            "Locator.click: Timeout 10000ms exceeded.\n"
+            "Call log:\n"
+            "  - waiting for locator(\"[data-testid='btn-login']\")\n"
+        )
+        result = collector.collect("[data-testid='btn-login']", error, "click")
 
-    def test_data_testid_multi_word_without_rotation_suffix(self):
-        # "customer" is 8 chars, not 4 — must NOT be stripped as a
-        # rotation suffix just because it follows a hyphen.
-        tokens = tokenize_selector("[data-testid='save-customer']")
-        assert tokens == ["save", "customer"]
+        assert result == "sentinel-context"
+        collector._locator_resolution_collector.collect.assert_called_once()
 
-    def test_class_selector(self):
-        tokens = tokenize_selector(".chaos-form")
-        assert tokens == ["chaos", "form"]
+    def test_actionability_raises_not_implemented_loudly(self):
+        page = MagicMock()
+        collector = ContextCollector(page)
 
-    def test_does_not_over_strip_short_real_words(self):
-        # A 4-char real word that happens to look like a rotation
-        # suffix shape (letters+digits) is an edge case worth being
-        # aware of — documenting current behavior rather than asserting
-        # a "correct" answer that doesn't exist yet. This is exactly the
-        # kind of case Sprint 3 prompt design should watch for.
-        tokens = tokenize_selector("[data-testid='item-name']")
-        assert tokens == ["item", "name"]
+        # Real capture shape from Sprint 6B's disabled-input diagnostic —
+        # locator resolved, action could not proceed.
+        error = PlaywrightTimeout(
+            "Locator.fill: Timeout 100ms exceeded.\n"
+            "Call log:\n"
+            "  - waiting for locator(\"#target\")\n"
+            "    - locator resolved to <input disabled id=\"target\"/>\n"
+            "    - fill(\"x\")\n"
+            "  - attempting fill action\n"
+            "    - element is not enabled\n"
+        )
+        with pytest.raises(NotImplementedError, match="actionability"):
+            collector.collect("#target", error, "fill")
+
+    def test_reference_raises_not_implemented_loudly(self):
+        page = MagicMock()
+        collector = ContextCollector(page)
+
+        error = PlaywrightTimeout(
+            "Locator.click: Timeout 10000ms exceeded.\n"
+            "Call log:\n"
+            "  - waiting for locator(\"[data-testid='btn-login']\")\n"
+            "  - locator resolved to <button>Log in</button>\n"
+            "  - element is not attached to the DOM"
+        )
+        with pytest.raises(NotImplementedError, match="reference"):
+            collector.collect("[data-testid='btn-login']", error, "click")

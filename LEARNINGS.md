@@ -2867,6 +2867,36 @@ retry/wait/dismiss-overlay logic, no Chaos App changes. The goal of this
 slice was narrowly "the pipeline stops being semantically tied to
 `proposed_selector`" — nothing about actionability recovery itself.
 
+### [Implementation] `ContextCollector` router split — `BaseContextCollector`/`LocatorResolutionCollector`
+
+Fourth vertical slice, and a pure structural refactor per Sprint 6
+pre-coding Decision #2 — no behavior change, confirmed by moving the
+existing `_collect_selector_context` body into
+`collectors/locator_resolution_collector.py` verbatim rather than
+rewriting it. New `phoenix/collector/collectors/` package:
+`base_collector.py` (`BaseContextCollector` ABC, mirrors
+`provider_factory.py`'s pattern), `locator_resolution_collector.py`
+(the moved logic, including `tokenize_selector`).
+`phoenix/collector/context_collector.py` is now a thin router:
+classifies via `parse_playwright_call_log()`, delegates to
+`LocatorResolutionCollector` for `FailureCategory.LOCATOR_RESOLUTION`,
+raises `NotImplementedError` for `ACTIONABILITY`/`REFERENCE` exactly as
+before, just phrased against the router's own collector map instead of
+inline.
+
+Test suite split to mirror the production split, rather than patched in
+place: `test_context_collector.py` now tests ONLY the router
+(delegation happens for `LOCATOR_RESOLUTION`, `NotImplementedError`
+fires loudly for the other two categories — three new tests, none of
+which existed before, since the router itself never had dedicated
+tests). `tokenize_selector`'s tests moved unchanged into the new
+`test_locator_resolution_collector.py`.
+
+**Verified: 64/64 full unit suite passes** (61 before this slice − 5
+`tokenize_selector` tests moved out of `test_context_collector.py` + 5
+the same tests in their new file + 3 new router tests = 64, confirmed by
+an actual run).
+
 ---
 
 ## TODO (future sprints)
@@ -2904,7 +2934,8 @@ slice was narrowly "the pipeline stops being semantically tied to
 - Sprint 6B implementation: DONE (classifier) — `classify_playwright_error()` → `parse_playwright_call_log()` rewrite is live in `phoenix/collector/failure_classifier.py`, verified against 8 real captured call logs (12 unit tests). Old `FailureType`/`classify_playwright_error()` fully removed (a first pass left it as unused dead code by mistake — caught by re-verification, not by any failing test — see "Sprint 6B (implementation)" for the full account)
 - Sprint 6B implementation: DONE (`ContextCollector`/`HealingContext`) — switched to `category`/`actionability_reason` fields; `decision_logger.py` writes `failure_category`/`actionability_reason`/`failure_label`
 - Sprint 6B implementation: DONE (`HealingAction`) — `phoenix/healing/actions.py` introduces `HealingAction`/`SelectorReplacement`/`ActionabilityStrategy`/`ActionabilityStrategyKind`/`RetryStrategy`; `ProviderResult.proposal` → `ProviderResult.action`; `Healer` explicitly rejects any non-`SelectorReplacement` action rather than assuming one. Behavior-preserving for the live `LOCATOR_RESOLUTION` path — no actionability recovery implemented yet. 61/61 full unit suite verified
-- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `ContextCollector` router split (`locator_resolution_collector.py` extraction, no behavior change), (2) `ActionabilityCollector` — minimal context for one reason first (candidates: `RECEIVES_EVENTS` or `STABLE`), (3) `actionability_prompt.py` + `ActionabilityStrategy` parsing end-to-end
+- Sprint 6B implementation: DONE (`ContextCollector` router split) — `phoenix/collector/collectors/` package added (`base_collector.py`, `locator_resolution_collector.py`); `context_collector.py` is now a thin router. Pure refactor, zero behavior change, 64/64 full unit suite verified
+- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `ActionabilityCollector` — minimal context for one reason first (candidates: `RECEIVES_EVENTS` or `STABLE`), (2) `actionability_prompt.py` + `ActionabilityStrategy` parsing end-to-end
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
