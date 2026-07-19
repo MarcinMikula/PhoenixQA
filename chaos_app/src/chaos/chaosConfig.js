@@ -20,15 +20,23 @@
  * failure family entirely (DETACHED_FROM_DOM). Combinable with any
  * level, same as shadow DOM.
  *
+ * Pointer Events Overlay (Sprint 6B) is a THIRD independent flag, same
+ * pattern again — simulates ActionabilityReason.RECEIVES_EVENTS
+ * (Playwright's FailureCategory.ACTIONABILITY family), a different axis
+ * entirely from selector rotation, DOM mutation, timing, or reference
+ * loss. See LEARNINGS.md "Sprint 6B (implementation) —
+ * ActionabilityCollector".
+ *
  * TWO CLASSES OF MECHANISM (clarified via Sprint 6A live-verification
  * discussion, see LEARNINGS.md "Sprint 6A — mechanism override"):
  *   - CORE mechanisms (this file's CHAOS_LEVELS ladder): selector_rotation,
  *     dom_mutation, async_delay. These cumulatively define the official
  *     LOW/MEDIUM/HIGH benchmark scenarios (Sprint 7/8) — the ladder
  *     itself is NOT changed by anything below.
- *   - INDEPENDENT mechanisms: shadow_dom, component_remount (and future
- *     additions). Orthogonal axes, toggled by their own flags, layered
- *     on top of whichever level is active.
+ *   - INDEPENDENT mechanisms: shadow_dom, component_remount,
+ *     pointer_events_overlay (and future additions). Orthogonal axes,
+ *     toggled by their own flags, layered on top of whichever level is
+ *     active.
  *
  * MECHANISM OVERRIDES (Sprint 6A addition — see LEARNINGS.md for the
  * full discussion, including why a "NONE" level was considered and
@@ -178,6 +186,12 @@ export function getChaosConfigFromEnv() {
   const componentRemountTrigger =
     import.meta.env.VITE_COMPONENT_REMOUNT_TRIGGER || undefined
 
+  // Sprint 6B — independent flag, same pattern again. Defaults to false
+  // so existing runs (Sprint 1-6A) are unaffected unless explicitly
+  // opted in.
+  const pointerEventsOverlayEnabled =
+    import.meta.env.VITE_POINTER_EVENTS_OVERLAY_ENABLED === 'true'
+
   const baseMechanisms = getMechanismsForLevel(level)
   const overrides = readMechanismOverridesFromEnv()
   const mechanisms = applyMechanismOverrides(baseMechanisms, overrides)
@@ -190,5 +204,6 @@ export function getChaosConfigFromEnv() {
     componentRemountMinMs,
     componentRemountMaxMs,
     componentRemountTrigger,
+    pointerEventsOverlayEnabled,
   }
 }

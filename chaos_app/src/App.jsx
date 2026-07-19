@@ -4,8 +4,8 @@
  * Wires the 3 demo components to the active chaos config.
  * The "Active chaos" panel at the top is a debugging aid for you
  * (and future you) — it makes the invisible (rotating selectors, shadow
- * DOM, delays, component remounts) visible while developing/inspecting
- * in the browser.
+ * DOM, delays, component remounts, pointer-event overlays) visible while
+ * developing/inspecting in the browser.
  */
 import { getChaosConfigFromEnv } from './chaos/chaosConfig'
 import { LoginForm } from './components/LoginForm'
@@ -36,6 +36,9 @@ function App() {
               ? ` (interval override: ${config.componentRemountMinMs ?? 200}-${config.componentRemountMaxMs ?? 800}ms)`
               : ''}
           </li>
+          <li>
+            Pointer Events Overlay (Sprint 6B, RECEIVES_EVENTS): {config.pointerEventsOverlayEnabled ? 'enabled' : 'disabled'}
+          </li>
         </ul>
       </div>
 
@@ -45,6 +48,8 @@ function App() {
           componentRemountEnabled={config.componentRemountEnabled}
           componentRemountMinMs={config.componentRemountMinMs}
           componentRemountMaxMs={config.componentRemountMaxMs}
+          componentRemountTrigger={config.componentRemountTrigger}
+          pointerEventsOverlayEnabled={config.pointerEventsOverlayEnabled}
         />
         <TicketList
           activeMechanisms={config.mechanisms}

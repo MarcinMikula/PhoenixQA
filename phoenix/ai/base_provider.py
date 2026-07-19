@@ -15,11 +15,23 @@ from phoenix.healing.actions import HealingAction
 class HealingContext:
     """
     Everything the LLM needs to propose a fix — a selector replacement
-    for FailureCategory.LOCATOR_RESOLUTION, or (once built) an
-    actionability recovery strategy for FailureCategory.ACTIONABILITY.
-    See LEARNINGS.md "Sprint 6B (decision)" for why this is category +
-    optional reason, not the single flat failure_type field this class
-    had through Sprint 6A.
+    for FailureCategory.LOCATOR_RESOLUTION, or (once the prompt layer
+    exists) an actionability recovery strategy for
+    FailureCategory.ACTIONABILITY. See LEARNINGS.md "Sprint 6B
+    (decision)" for why this is category + optional reason, not the
+    single flat failure_type field this class had through Sprint 6A.
+
+    collector_metadata (Sprint 6B — ActionabilityCollector) is a
+    deliberately generic, optional bag for whatever extra structured
+    data a given collector wants to attach, rather than hardcoding
+    RECEIVES_EVENTS-specific (or any other single reason's) field names
+    onto this shared dataclass. dom_snapshot stays a short,
+    human-readable summary for any collector that wants one;
+    collector_metadata carries the richer structured data (bounding
+    boxes, computed styles, etc.) a future prompt will actually consume.
+    Kept generic on purpose — the exact shape needed for STABLE or any
+    other future reason isn't known yet, and hardcoding fields for one
+    reason now would bias that design before there's evidence for it.
     """
     broken_selector: str
     error_message: str
@@ -28,6 +40,7 @@ class HealingContext:
     original_code: str
     category: FailureCategory
     actionability_reason: Optional[ActionabilityReason] = None
+    collector_metadata: Optional[dict] = None
     screenshot_path: Optional[str] = None
 
 

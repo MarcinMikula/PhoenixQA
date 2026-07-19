@@ -7,20 +7,19 @@ provider_factory.py's existing pattern for AI providers. Classifies the
 failure via parse_playwright_call_log(), then delegates to the matching
 collector.
 
-Only FailureCategory.LOCATOR_RESOLUTION has a real collector
-(collectors/locator_resolution_collector.py). ACTIONABILITY (5 reasons)
-and the dormant REFERENCE category raise NotImplementedError here rather
-than being half-built — see LEARNINGS.md "Sprint 6B (decision)".
-
-This file was previously the single class containing all collection
-logic directly; that logic moved into LocatorResolutionCollector
-unchanged (see LEARNINGS.md "Sprint 6B (implementation)" for
-confirmation this was a pure move — same tests, same assertions, still
-passing, zero behavior change).
+FailureCategory.LOCATOR_RESOLUTION -> LocatorResolutionCollector (live
+since Sprint 2, moved into its own module in the router split).
+FailureCategory.ACTIONABILITY -> ActionabilityCollector (Sprint 6B —
+only ActionabilityReason.RECEIVES_EVENTS implemented; the collector
+itself raises NotImplementedError for the other four reasons, not this
+router).
+FailureCategory.REFERENCE and UNKNOWN still raise NotImplementedError
+directly here — no ReferenceCollector exists at all, dormant per Gap #4.
 """
 from playwright.sync_api import Page
 
 from phoenix.ai.base_provider import HealingContext
+from phoenix.collector.collectors.actionability_collector import ActionabilityCollector
 from phoenix.collector.collectors.locator_resolution_collector import LocatorResolutionCollector
 from phoenix.collector.failure_classifier import FailureCategory, parse_playwright_call_log
 
@@ -29,6 +28,7 @@ class ContextCollector:
     def __init__(self, page: Page):
         self.page = page
         self._locator_resolution_collector = LocatorResolutionCollector(page)
+        self._actionability_collector = ActionabilityCollector(page)
 
     def collect(self, broken_selector: str, error: Exception, original_code: str) -> HealingContext:
         """
@@ -44,13 +44,15 @@ class ContextCollector:
                 broken_selector, error, original_code, classified
             )
 
-        # Only LOCATOR_RESOLUTION has a real collector so far.
-        # ACTIONABILITY (5 reasons) and the dormant REFERENCE category
-        # are declared in the model (see LEARNINGS.md "Sprint 6B
-        # (decision)") but have no collector yet. Explicit and loud, not
-        # a silent fallback that would produce misleading context.
+        if classified.category == FailureCategory.ACTIONABILITY:
+            return self._actionability_collector.collect(
+                broken_selector, error, original_code, classified
+            )
+
+        # REFERENCE (dormant, Gap #4) and UNKNOWN have no collector at
+        # all yet. Explicit and loud, not a silent fallback that would
+        # produce misleading context.
         raise NotImplementedError(
             f"ContextCollector has no collector for {classified.category.value} yet. "
-            f"Planned for a future sub-sprint (actionability_collector.py) — see LEARNINGS.md "
-            f"'Sprint 6B (decision)'."
+            f"See LEARNINGS.md 'Sprint 6B (decision)'."
         )

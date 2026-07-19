@@ -9,6 +9,15 @@
  * rotate on every mount, so a hardcoded [data-testid="username"] locator
  * will work on one run and fail on the next — exactly the scenario the
  * Healer (Sprint 4/5) needs to repair.
+ *
+ * The submit button is also the target for two independent mechanisms:
+ * ComponentRemountWrapper (Sprint 6A, DETACHED_FROM_DOM family — dormant,
+ * see Gap #4) and PointerEventsOverlay (Sprint 6B, RECEIVES_EVENTS —
+ * live). Both wrap the SAME button deliberately, for the same reason
+ * Sprint 6A originally targeted this button for DETACHED_FROM_DOM:
+ * reusing the same login flow across sprints avoids confounding "new
+ * failure type" with "new UI scenario" when something doesn't behave as
+ * expected on first verification.
  */
 import { useMemo, useState } from 'react'
 import { rotateSelector } from '../chaos/selectorRotation'
@@ -17,6 +26,7 @@ import {
   ComponentRemountWrapper,
   RemountTrigger,
 } from '../chaos/componentRemount'
+import { PointerEventsOverlay } from '../chaos/pointerEventsOverlay'
 
 const VALID_USERNAME = 'admin'
 const VALID_PASSWORD = 'secret'
@@ -27,6 +37,7 @@ export function LoginForm({
   componentRemountMinMs,
   componentRemountMaxMs,
   componentRemountTrigger,
+  pointerEventsOverlayEnabled = false,
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -91,16 +102,18 @@ export function LoginForm({
           onChange={(e) => setPassword(e.target.value)}
         />
 
-        <ComponentRemountWrapper
-          active={componentRemountEnabled}
-          trigger={componentRemountTrigger || RemountTrigger.TIMEOUT}
-          minDelayMs={componentRemountMinMs}
-          maxDelayMs={componentRemountMaxMs}
-        >
-          <button type="submit" data-testid={testIds.submit}>
-            Log in
-          </button>
-        </ComponentRemountWrapper>
+        <PointerEventsOverlay active={pointerEventsOverlayEnabled}>
+          <ComponentRemountWrapper
+            active={componentRemountEnabled}
+            trigger={componentRemountTrigger || RemountTrigger.TIMEOUT}
+            minDelayMs={componentRemountMinMs}
+            maxDelayMs={componentRemountMaxMs}
+          >
+            <button type="submit" data-testid={testIds.submit}>
+              Log in
+            </button>
+          </ComponentRemountWrapper>
+        </PointerEventsOverlay>
 
         {error && (
           <p data-testid={testIds.error}>
