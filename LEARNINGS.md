@@ -2867,6 +2867,66 @@ retry/wait/dismiss-overlay logic, no Chaos App changes. The goal of this
 slice was narrowly "the pipeline stops being semantically tied to
 `proposed_selector`" — nothing about actionability recovery itself.
 
+### [Verification] Repo hygiene audit — proactive pass, not another chance discovery
+
+Two dead-code slips had now been caught by chance in back-to-back
+commits (the `FailureType` leftover two entries above, plus a smaller
+one folded into that same fix). Given the project's own stated pace of
+change through Sprint 6B, decided a systematic pass was worth doing
+deliberately rather than continuing to rely on noticing things by
+accident. Method: `pyflakes` across the whole codebase, plus
+`pytest --collect-only` against the full `tests/` tree (not just
+`tests/unit/`) to catch anything that fails to even collect.
+
+Four findings, all fixed in the same pass:
+
+1. **`phoenix/ai/ollama_provider.py`** — a duplicate consecutive import
+   line, left over from an earlier "add this line" instruction that got
+   applied as an addition instead of a replacement. Removed.
+2. **`tests/unit/test_failure_classifier.py`** — docstring claimed the
+   old classifier tests "are left in `test_context_collector.py`,
+   unchanged" — stale since those deprecated test classes were removed
+   two commits earlier (see "`ContextCollector`/`HealingContext`
+   switched over to the new model" above). Corrected. An unused
+   `ClassifiedFailure` import left over from an earlier draft was also
+   removed.
+3. **`phoenix/healing/autonomous_mode.py`** — docstring still read "TODO
+   Sprint 5" even though Sprint 5 shipped Autonomous Mode in full, just
+   never in this particular file (`autonomous_policy.py`/`healer.py`
+   carry the real implementation). Corrected to point at where the real
+   code actually lives rather than leave a five-sprint-old "not done"
+   marker that no longer describes reality. File kept, not deleted, so
+   this doesn't read as an unexplained removal in `git blame` — noted as
+   safe to delete in a future pass if desired.
+4. **`tests/chaos/test_diagnostic_actionability_reasons.py` and
+   `test_diagnostic_fill_reason.py` deleted.** Both were explicitly
+   marked THROWAWAY / "delete after capturing the result" in their own
+   docstrings when written during Sprint 6B's diagnostic work — their
+   findings are already fully captured in this file and in
+   `test_failure_classifier.py`'s real-capture test data. Despite that
+   explicit self-labeling, neither had actually been deleted across two
+   further commits.
+
+**Not touched, flagged for a separate decision, not urgent:**
+`pages/chaos_login_page.py` (unused `Settings` import) and `__main__.py`
+(unused `sys` import, a placeholder-less f-string) — both pre-existing
+since Sprint 0/1, unrelated to Sprint 6B's work, low priority.
+
+**Verified: 61/61 unit tests pass, 67/67 tests collect cleanly across
+the full `tests/` tree** — up from needing the two now-deleted
+`tests/chaos/` diagnostic files to also collect without error. No
+behavior change anywhere in this pass; every fix is either dead code,
+a stale comment, or a file that was never supposed to survive this long.
+
+**Practical pattern, worth naming since this is the second time it's
+been said explicitly in this file:** the two dead-code slips that
+prompted this audit (the `FailureType` leftover, and the smaller one
+folded into the same fix) were both caught by chance — by going back to
+write a `LEARNINGS.md` entry and noticing the code didn't match what was
+about to be documented as done, not by any test failing. A proactive
+`pyflakes`/`--collect-only` pass is cheap and catches the same category
+of mistake without waiting for a third chance discovery.
+
 ### [Implementation] `ContextCollector` router split — `BaseContextCollector`/`LocatorResolutionCollector`
 
 Fourth vertical slice, and a pure structural refactor per Sprint 6
@@ -2896,6 +2956,147 @@ tests). `tokenize_selector`'s tests moved unchanged into the new
 `tokenize_selector` tests moved out of `test_context_collector.py` + 5
 the same tests in their new file + 3 new router tests = 64, confirmed by
 an actual run).
+
+### [Decision] `RECEIVES_EVENTS` picked first among the five `ActionabilityReason` values
+
+Fifth vertical slice — the first real `ActionabilityCollector`
+implementation, following the same discipline as every other slice this
+sprint: one collection strategy built and verified before the next is
+started, not five built in parallel.
+
+`RECEIVES_EVENTS` was chosen over the other four
+(`VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE`) for two independent reasons,
+not one:
+
+1. **Richest, most deterministic signal of the five.** Playwright's own
+   call log *names the specific blocking element* for this reason
+   (`"... intercepts pointer events"`) — unlike `VISIBLE`/`ENABLED`/
+   `EDITABLE`, which only report that a condition failed, not what
+   caused it. A collector for those three would have nothing but the
+   target element itself to inspect; `RECEIVES_EVENTS` hands the
+   collector a second, independently-checkable element for free.
+2. **`STABLE` was deliberately passed over, not merely deprioritized.**
+   Both Sprint 6A (`DETACHED_FROM_DOM` reproduction attempts) and Sprint
+   6B's own diagnostic work already found timing-based reproduction
+   unreliable — no deterministic Chaos App mechanism exists for
+   "position stops changing" the way one now exists for "an element sits
+   on top of another." Building `STABLE` first would have meant
+   fighting the same non-determinism problem this project already
+   deprioritized `DETACHED_FROM_DOM` over (see Sprint 6A), rather than
+   applying that lesson.
+
+Realism note, same style as the original four Chaos App mechanisms'
+ranking (Sprint 1): cookie banners, modals, sticky headers, and stale
+backdrops left behind by a closed dialog are common, everyday causes of
+exactly this Playwright failure shape in real production frontends —
+`RECEIVES_EVENTS` isn't just the easiest of the five to build, it's also
+one of the more realistic.
+
+### [Implementation] `pointerEventsOverlay.jsx` — a third independent Chaos App flag
+
+New Chaos App mechanism, same pattern as `shadow_dom` and
+`component_remount`: a THIRD flag independent of `CHAOS_LEVELS`
+(`VITE_POINTER_EVENTS_OVERLAY_ENABLED`), not a new rung on the
+LOW/MEDIUM/HIGH ladder. When active, a transparent, full-viewport
+`<div>` (`data-testid="chaos-pointer-events-overlay"`, `position: fixed`,
+`z-index: 9999`) renders as a sibling alongside the target element —
+the target itself stays completely unmodified: same selector, same
+visibility, same DOM position, same enabled state. Only pointer events
+landing anywhere in the viewport are intercepted before they reach
+whatever's underneath.
+
+**Deterministic by design, continuing a pattern this sprint keeps
+reapplying** (Sprint 6A's move from a probabilistic timer-based remount
+trigger to a synchronous `mousedown` trigger; Sprint 6B's earlier move
+from CSS-easing animation to a monotonic `requestAnimationFrame` loop
+for its own diagnostic work): the overlay is present continuously while
+active, not triggered on a timer or a probability roll. Every click
+attempt anywhere in the viewport is guaranteed to be intercepted — zero
+timing luck involved, and the HTML shape it produces matches exactly
+what Sprint 6B's own diagnostic already proved live produces the
+`RECEIVES_EVENTS` reason in the first place.
+
+Wired onto the login submit button in `LoginForm.jsx`, wrapping the
+existing `ComponentRemountWrapper` rather than replacing it — both
+mechanisms now target the same button, deliberately: reusing the same
+login flow across sprints (rather than picking a fresh element for each
+new failure type) avoids confounding "new failure type behaves
+unexpectedly" with "new UI scenario behaves unexpectedly" if something
+doesn't verify cleanly on first try. `chaosConfig.js` gains
+`pointerEventsOverlayEnabled` as a third orthogonal flag alongside
+`shadowDomEnabled`/`componentRemountEnabled`, defaulting to `false` so
+every existing Sprint 1-6A run is unaffected unless explicitly opted in.
+The "Active chaos" debug panel (`App.jsx`) gains a matching status line,
+same as every other mechanism before it.
+
+### [Implementation] `ActionabilityCollector` — two independent blocker confirmations, not one
+
+`phoenix/collector/collectors/actionability_collector.py` (new file).
+`ContextCollector` now routes `FailureCategory.ACTIONABILITY` here
+instead of raising `NotImplementedError` directly — the collector itself
+still raises `NotImplementedError` for the four unimplemented reasons
+(`VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE`), now scoped one level deeper
+than before, matching the same "explicit and loud, never a silent
+fallback" convention this project has used since Sprint 2's
+`SELECTOR_NOT_FOUND`-only scoping.
+
+**Deliberately gathers two independent confirmations of the blocking
+element, not one:**
+
+1. `ClassifiedFailure.blocking_element` — the element Playwright's own
+   call log already named, parsed by `parse_playwright_call_log()`
+   (Sprint 6B decision).
+2. An independent DOM probe via `document.elementFromPoint()`, evaluated
+   at the target element's own bounding-box center — deliberately NOT
+   trusting the call log text alone. Reasoning ties directly to Gap #13
+   (named earlier in this same Sprint 6B section): the call log is
+   Playwright's unversioned diagnostic wording, not a stable API
+   contract. Keeping a second, independently-derived signal means a
+   future prompt has both to reconcile — and a real disagreement between
+   them becomes visible information for the LLM, not a silent gap —
+   rather than the collector's own correctness resting entirely on one
+   unverified text source.
+
+If the DOM probe's own `elementFromPoint()` call returns the target
+element itself (the overlay is gone by the time the probe runs, e.g. a
+transient banner that's since dismissed), the collector does not
+fabricate a second confirmation — `collector_metadata` simply carries
+one source instead of two, and `dom_snapshot` says so honestly ("no
+independent confirmation — target may be the topmost element") rather
+than presenting partial information as if it were complete. Directly
+protected by
+`test_two_confirmations_can_be_compared_when_dom_probe_finds_nothing`.
+
+**`HealingContext.collector_metadata` (new, optional field) carries the
+richer structured data** — target/blocker `outerHTML`, bounding boxes,
+computed style (`position`/`zIndex`/`pointerEvents`/`opacity`/`display`/
+`visibility`) — rather than hardcoding `RECEIVES_EVENTS`-specific field
+names onto the shared `HealingContext` dataclass. `dom_snapshot` stays a
+short, human-readable summary for any collector that wants one (unaffected
+by this addition); `collector_metadata` is where a future prompt will
+actually read from. Kept deliberately generic rather than named after
+this one reason — the exact shape `STABLE` or any other future reason
+will need isn't known yet, and hardcoding fields for `RECEIVES_EVENTS`
+now would bias that future design before there's evidence to justify it.
+
+**Verified: 70/70 full unit suite passes** (64 before this slice + 6 new
+— 2 for the `RECEIVES_EVENTS` context-gathering path, 4 parametrized
+over the remaining `ActionabilityReason` values confirming each raises
+`NotImplementedError` by name and never touches `page.evaluate()` before
+failing = 70, confirmed by an actual run). `test_context_collector.py`'s
+existing actionability routing test was updated in place (delegates to
+`ActionabilityCollector` now, rather than asserting
+`NotImplementedError` at the router level) — router test count itself
+unchanged at 3, since the router's own contract ("route to the right
+collector, or fail loudly if none exists") didn't change, only which
+categories now have somewhere real to route to.
+
+**Scope, stated explicitly per the reviewed plan, same as every other
+slice this sprint:** this intentionally stops at context collection. No
+`actionability_prompt.py`, no provider response handling for
+`ActionabilityStrategy`, no actual recovery/retry logic — `Healer` still
+has nothing that knows how to act on an `ACTIONABILITY` category context
+once collected. That remains explicitly future work, not an oversight.
 
 ---
 
@@ -2935,7 +3136,9 @@ an actual run).
 - Sprint 6B implementation: DONE (`ContextCollector`/`HealingContext`) — switched to `category`/`actionability_reason` fields; `decision_logger.py` writes `failure_category`/`actionability_reason`/`failure_label`
 - Sprint 6B implementation: DONE (`HealingAction`) — `phoenix/healing/actions.py` introduces `HealingAction`/`SelectorReplacement`/`ActionabilityStrategy`/`ActionabilityStrategyKind`/`RetryStrategy`; `ProviderResult.proposal` → `ProviderResult.action`; `Healer` explicitly rejects any non-`SelectorReplacement` action rather than assuming one. Behavior-preserving for the live `LOCATOR_RESOLUTION` path — no actionability recovery implemented yet. 61/61 full unit suite verified
 - Sprint 6B implementation: DONE (`ContextCollector` router split) — `phoenix/collector/collectors/` package added (`base_collector.py`, `locator_resolution_collector.py`); `context_collector.py` is now a thin router. Pure refactor, zero behavior change, 64/64 full unit suite verified
-- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `ActionabilityCollector` — minimal context for one reason first (candidates: `RECEIVES_EVENTS` or `STABLE`), (2) `actionability_prompt.py` + `ActionabilityStrategy` parsing end-to-end
+- Sprint 6B: DONE — proactive repo hygiene audit (pyflakes + full-tree `pytest --collect-only`), independent of the ActionabilityCollector work — fixed a duplicate import, two stale docstrings, and deleted two THROWAWAY diagnostic test files that had survived past their own self-documented deletion point. 61/61 unit tests pass, 67/67 collect cleanly across the full `tests/` tree at the time. See "Repo hygiene audit" above
+- Sprint 6B implementation: DONE (`ActionabilityCollector`, `RECEIVES_EVENTS` only) — `phoenix/collector/collectors/actionability_collector.py` gathers two independent blocker confirmations (Playwright's call log + a `document.elementFromPoint()` DOM probe) into `HealingContext.collector_metadata` (new optional field). Backed by a new, deterministic Chaos App mechanism (`pointerEventsOverlay.jsx`, third independent flag alongside `shadow_dom`/`component_remount`). `VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE` still raise `NotImplementedError` — `STABLE` deliberately passed over for now, same non-determinism problem already deprioritized for `DETACHED_FROM_DOM` in Sprint 6A. 70/70 full unit suite verified. **Not yet verified live** (real browser + real Ollama) — everything so far is unit-tested against a mocked `page.evaluate()`, same caveat this project has flagged before shipping a live-verification pass for a new collector
+- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `actionability_prompt.py` + a real provider response path so `ActionabilityStrategy` can actually be produced and parsed for `RECEIVES_EVENTS`, not just collected, (2) live verification against real Chaos App + Ollama (`VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`) — the same step that caught real bugs in Sprint 4/5 that unit tests alone could not, (3) only after (1)+(2): decide the second `ActionabilityReason` to implement (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
