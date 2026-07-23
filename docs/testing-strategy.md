@@ -30,16 +30,19 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 44 tests, all passing.**
+**Current state: 70 tests, all passing.**
 
 | Module under test | File | What's covered |
 |---|---|---|
-| Selector tokenization | `test_context_collector.py` | Rotation suffix stripping, attribute selector parsing, id/class shapes |
-| Failure classification | `test_context_collector.py` | `SELECTOR_NOT_FOUND` detection for both `click()` and `fill()` message shapes (the fill()-shaped gap was a real bug, see `LEARNINGS.md` Sprint 4) |
+| Selector tokenization | `test_locator_resolution_collector.py` | Rotation suffix stripping, attribute selector parsing, id/class shapes — moved out of `test_context_collector.py` in the Sprint 6B router split (see `LEARNINGS.md`), same tests, unchanged |
+| Failure classification | `test_failure_classifier.py` | `parse_playwright_call_log()` — `FailureCategory.LOCATOR_RESOLUTION` vs `ACTIONABILITY` (all five `ActionabilityReason` values) vs `UNKNOWN`, built entirely from real captured Playwright call-log output, not hand-crafted samples (see `LEARNINGS.md` Sprint 6B) |
+| `ContextCollector` routing | `test_context_collector.py` | Router-only: delegates to `LocatorResolutionCollector`/`ActionabilityCollector` per `FailureCategory`, raises `NotImplementedError` loudly for the dormant `REFERENCE` category — collector-specific logic lives in each collector's own test file, not here |
+| Actionability context collection | `test_actionability_collector.py` | `RECEIVES_EVENTS` only (Sprint 6B): two independent blocker confirmations (call log + `elementFromPoint()` DOM probe), graceful handling when the DOM probe finds nothing, `NotImplementedError` for the four remaining `ActionabilityReason` values, confirmed via `page.evaluate.assert_not_called()` that no DOM work is attempted for an unimplemented reason |
 | LLM response parsing | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
 | Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt) |
 | Budget/policy enforcement | `test_autonomous_policy.py` | Total-vs-per-selector attempt limits, token limits, `None`-safe token handling, policy configurability |
-| Healer orchestration | `test_healer.py` | Safe Mode auto-reject on empty proposals, Autonomous Mode confidence gate, budget-exceeded blocking the LLM call entirely, provider exceptions still consuming budget |
+| Healer orchestration | `test_healer.py` | Safe Mode auto-reject on empty proposals, Autonomous Mode confidence gate, budget-exceeded blocking the LLM call entirely, provider exceptions still consuming budget, unsupported `HealingAction` type rejected loudly in both modes (Sprint 6B `SelectorReplacement`/`ActionabilityStrategy` migration) |
+| `BasePage` healing integration | `test_base_page.py` | `click()`/`fill()` catch all three `Healing*Error` types and re-raise the ORIGINAL Playwright error rather than the healing-internal one — a real Sprint 6A bug (the contract was documented but never actually implemented) caught while attempting live verification, not by a failing test |
 | Provider selection | `test_provider_factory.py` | Correct provider returned per `AI_PROVIDER` setting, error on unknown provider |
 
 **Notable pattern across this suite:** several of these tests exist
@@ -52,6 +55,10 @@ the unit layer is pulling real weight, not just padding a test count.
 **Known gap:** `Healer`/`safe_mode.py` interaction with a real
 Playwright `Page` and a real Ollama call is *not* unit tested — by
 design, since that requires the integration layer below.
+`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering (Sprint
+6B) has the same gap: verified only against a mocked `page.evaluate()`,
+not yet against a real browser + `pointerEventsOverlay.jsx` + Ollama —
+see `docs/gaps.md` Gap #5/#12.
 
 ---
 
@@ -201,7 +208,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 44 tests, all passing |
+| Unit | ✅ Substantial | 70 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |
