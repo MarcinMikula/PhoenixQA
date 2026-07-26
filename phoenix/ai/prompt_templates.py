@@ -1,16 +1,26 @@
 """
 prompt_templates.py
 
-Builds the system + user prompt sent to the LLM for Sprint 3.
-Kept as its own module — separate from the HTTP/provider plumbing — so the
-prompt itself can be iterated on and tested without touching
-ollama_provider.py or anthropic_provider.py.
+Builds the system + user prompt sent to the LLM for
+FailureCategory.LOCATOR_RESOLUTION (selector replacement). Kept as its
+own module — separate from the HTTP/provider plumbing — so the prompt
+itself can be iterated on and tested without touching ollama_provider.py
+or anthropic_provider.py.
 
-Sprint 3 scope: only builds a prompt for FailureType.SELECTOR_NOT_FOUND.
-Other failure types need different prompts entirely ("propose a wait
-strategy" vs "propose a selector") — see LEARNINGS.md Gap #4. Building
-those prompts now, before Sprint 6 gives us real DETACHED_FROM_DOM/
-NOT_VISIBLE context to design against, would be guessing blind.
+TRANSITIONAL NAMING NOTE (Sprint 6B): this module predates the
+phoenix/ai/prompts/ package introduced alongside
+phoenix/ai/prompts/actionability_prompt.py. It is the LOCATOR_RESOLUTION
+counterpart to that module and will eventually move to
+phoenix/ai/prompts/selector_prompt.py for consistency — deliberately not
+done in the same commit that introduced the actionability path, to keep
+that commit's diff about the new provider slice, not a side-refactor of
+working code. See LEARNINGS.md "Sprint 6B (implementation) —
+actionability provider path".
+
+Only builds a prompt for FailureCategory.LOCATOR_RESOLUTION — other
+categories need different prompts entirely ("propose a wait/dismiss
+strategy" vs "propose a selector"), which is exactly what
+phoenix/ai/prompts/actionability_prompt.py is for.
 """
 from phoenix.ai.base_provider import HealingContext
 
@@ -48,7 +58,7 @@ Rules:
 def build_user_prompt(context: HealingContext) -> str:
     """
     Renders a HealingContext into the user-facing prompt text.
-    Sprint 3: assumes context.failure_type == SELECTOR_NOT_FOUND — this
+    Assumes context.category == FailureCategory.LOCATOR_RESOLUTION — this
     function is only ever called from that path (see provider implementations).
     """
     return f"""A test action failed with this error:

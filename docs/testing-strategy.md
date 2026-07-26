@@ -30,7 +30,7 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 70 tests, all passing.**
+**Current state: 90 tests, all passing.**
 
 | Module under test | File | What's covered |
 |---|---|---|
@@ -38,7 +38,9 @@ actually produced (not just hypothetical ones).
 | Failure classification | `test_failure_classifier.py` | `parse_playwright_call_log()` — `FailureCategory.LOCATOR_RESOLUTION` vs `ACTIONABILITY` (all five `ActionabilityReason` values) vs `UNKNOWN`, built entirely from real captured Playwright call-log output, not hand-crafted samples (see `LEARNINGS.md` Sprint 6B) |
 | `ContextCollector` routing | `test_context_collector.py` | Router-only: delegates to `LocatorResolutionCollector`/`ActionabilityCollector` per `FailureCategory`, raises `NotImplementedError` loudly for the dormant `REFERENCE` category — collector-specific logic lives in each collector's own test file, not here |
 | Actionability context collection | `test_actionability_collector.py` | `RECEIVES_EVENTS` only (Sprint 6B): two independent blocker confirmations (call log + `elementFromPoint()` DOM probe), graceful handling when the DOM probe finds nothing, `NotImplementedError` for the four remaining `ActionabilityReason` values, confirmed via `page.evaluate.assert_not_called()` that no DOM work is attempted for an unimplemented reason |
-| LLM response parsing | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
+| Actionability LLM response parsing | `test_actionability_response_parser.py` | `ActionabilityStrategy` parsing for `RECEIVES_EVENTS`: every `ActionabilityStrategyKind` value, hallucinated/unrecognized strategy strings falling back to `NO_SAFE_RECOVERY` rather than crashing, `force_not_allowed` parsed (not rejected) despite the prompt discouraging it, `suggested_wait_ms`/`blocking_element` coercion, and the same fenced/stray-text/truncated-JSON defensive coverage as `test_response_parser.py` (see `LEARNINGS.md` Sprint 6B — actionability provider path) |
+| Provider category routing | `test_ollama_provider.py` | First unit-level tests `OllamaProvider` has ever had (Sprint 3-5 verification for the selector path was live-run-only). Confirms `analyze_failure()` selects the correct prompt/parser pair by `HealingContext.category`, that an unrecognized category/reason combination raises `NotImplementedError` before any network call, and that a malformed actionability response still returns a well-typed `ActionabilityStrategy` rather than crashing. `httpx.get`/`.post` fully mocked, no live Ollama call |
+| LLM response parsing (selector) | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
 | Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt) |
 | Budget/policy enforcement | `test_autonomous_policy.py` | Total-vs-per-selector attempt limits, token limits, `None`-safe token handling, policy configurability |
 | Healer orchestration | `test_healer.py` | Safe Mode auto-reject on empty proposals, Autonomous Mode confidence gate, budget-exceeded blocking the LLM call entirely, provider exceptions still consuming budget, unsupported `HealingAction` type rejected loudly in both modes (Sprint 6B `SelectorReplacement`/`ActionabilityStrategy` migration) |
@@ -55,10 +57,12 @@ the unit layer is pulling real weight, not just padding a test count.
 **Known gap:** `Healer`/`safe_mode.py` interaction with a real
 Playwright `Page` and a real Ollama call is *not* unit tested — by
 design, since that requires the integration layer below.
-`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering (Sprint
-6B) has the same gap: verified only against a mocked `page.evaluate()`,
-not yet against a real browser + `pointerEventsOverlay.jsx` + Ollama —
-see `docs/gaps.md` Gap #5/#12.
+`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering AND the
+`actionability_prompt.py`/`actionability_response_parser.py` provider
+path built on top of it (both Sprint 6B) have the same gap end to end:
+verified only against a mocked `page.evaluate()`/`httpx`, not yet
+against a real browser + `pointerEventsOverlay.jsx` + a real Ollama call
+— see `docs/gaps.md` Gap #5/#12.
 
 ---
 
@@ -208,7 +212,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 70 tests, all passing |
+| Unit | ✅ Substantial | 90 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |

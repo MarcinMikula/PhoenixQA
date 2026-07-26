@@ -3098,6 +3098,198 @@ slice this sprint:** this intentionally stops at context collection. No
 has nothing that knows how to act on an `ACTIONABILITY` category context
 once collected. That remains explicitly future work, not an oversight.
 
+### [Decision] Scope of the actionability provider slice — proof of proposal, not proof of recovery
+
+Sixth vertical slice, picking up exactly where the previous one stopped.
+Two competing scopes were weighed before writing any code:
+
+**Option A (chosen) — prompt + parsing + a real provider response
+path, with `Healer` still rejecting the result.** `HealingContext` for
+`ACTIONABILITY`/`RECEIVES_EVENTS` flows all the way through
+`OllamaProvider` to a real, structured `ActionabilityStrategy` —
+`ProviderResult.action` is genuinely populated, not stubbed — but
+`Healer` continues to reject any non-`SelectorReplacement` action
+exactly as it already did (see "HealingAction migration" above). Nothing
+in `BasePage.click()`/`fill()` changes.
+
+**Option B (rejected for this slice) — also making `Healer` execute the
+strategy** (retry after a wait, click a dismiss target, etc.). Rejected
+because it is not "prompt work plus a bit of execution" — it is a
+different problem with its own contract questions: `Healer.attempt_heal()`
+today returns a bare healed-selector string, which `BasePage` retries
+the SAME action against. An `ActionabilityStrategy` doesn't name a new
+selector to retry with; it names an action to take before retrying the
+ORIGINAL selector (wait N ms, click something else first, or don't
+retry at all). `safe_mode.py`'s human-review prompt is written in terms
+of "proposed selector." `decision_logger.py` is explicitly
+selector-shaped by design, with its own generalization already flagged
+as future work once an `ActionabilityStrategy` genuinely reaches it.
+Building execution now would mean deciding all of that under the same
+commit whose actual goal was proving the LLM could produce a structured
+`ActionabilityStrategy` at all — the two questions ("can the model
+propose a sound recovery strategy" and "how does PhoenixQA safely carry
+it out") are independent and shouldn't be answered by the same slice.
+
+**What this slice proves, stated precisely, same discipline as every
+other slice this sprint:** PhoenixQA can collect actionability context,
+get a structured, parseable `ActionabilityStrategy` back from a real
+provider call, and `Healer` correctly still refuses to act on it. It
+does NOT yet prove PhoenixQA can safely recover from a `RECEIVES_EVENTS`
+failure — that is Option B, deliberately deferred to its own future
+slice, after live verification of this one.
+
+### [Decision] `phoenix/ai/prompts/` package started, `prompt_templates.py` left as-is
+
+`phoenix/ai/prompts/actionability_prompt.py` (new) is the first module
+in a package meant to eventually hold one prompt module per category
+(`prompts/selector_prompt.py`, `prompts/actionability_prompt.py`) —
+but this commit only introduces the package for the NEW path.
+`phoenix/ai/prompt_templates.py` (the existing `LOCATOR_RESOLUTION`
+prompt) stays exactly where it is; migrating it into
+`prompts/selector_prompt.py` is explicitly deferred, not bundled into a
+commit whose actual goal is the actionability provider path. Rationale,
+stated directly: a working file shouldn't move as a side effect of an
+unrelated feature commit — the migration is real future work, tracked
+below in TODO, not lost by being left out now. Two small, genuinely
+stale docstring references to the long-removed `context.failure_type`
+field were fixed in `prompt_templates.py` while it was already open for
+this reason — a correction, not the deferred migration itself.
+
+Same reasoning extended to parsing: `phoenix/ai/actionability_response_parser.py`
+(new) is a sibling to `phoenix/ai/response_parser.py`, not a second
+branch inside it — that file's own docstring already states it "is, and
+has only ever been, called from the `FailureCategory.LOCATOR_RESOLUTION`
+path." The two parsers duplicate a small (~15 line) JSON-extraction
+helper rather than sharing it, deliberately — see "Repo hygiene audit"
+above for the project's general stance on reuse-for-its-own-sake; here
+the two response shapes (selector + alternatives vs. a five-value
+strategy enum + nullable wait/blocker fields) are different enough that
+a shared private helper would recreate exactly the kind of coupling
+this sprint has spent several slices deliberately removing (`FailureType`
+→ `FailureCategory`/`ActionabilityReason`, the router split). If the
+extraction logic ever needs to diverge — say, a future reason needs a
+different JSON shape entirely — a shared helper would have been a
+liability, not a saving.
+
+### [Implementation] `actionability_prompt.py` — a categorically different task from selector replacement
+
+The system prompt is NOT a variant of the selector prompt's "find a new
+matching attribute value" — it says outright that the target's selector
+is correct and must not change, then walks the model through a genuinely
+different decision: given two independently-gathered pieces of evidence
+about whatever's blocking the target (Playwright's own call-log naming,
+plus `ActionabilityCollector`'s `elementFromPoint()` DOM probe — see the
+previous slice), decide whether the blocker looks transient (propose
+`wait_and_retry` with a suggested wait), persistent-but-dismissible
+(propose `dismiss_blocker`, naming the element), or neither (propose
+`no_safe_recovery` at low confidence rather than guessing) — same
+"honest low confidence over a plausible-looking guess" principle as the
+selector prompt's step 5.
+
+**`force_not_allowed` is deliberately talked out of, not removed from
+the enum.** The system prompt explicitly instructs the model never to
+propose bypassing Playwright's own actionability check, with the
+reasoning spelled out in the prompt itself: a real user's mouse would be
+blocked by the same overlay a force-click ignores, so proposing one
+would hide a genuine UI problem rather than describe it honestly.
+`ActionabilityStrategyKind.FORCE_NOT_ALLOWED` stays in the enum — the
+type needs to be able to represent it, and the parser doesn't reject it
+if a model disobeys (see next section) — but the prompt actively steers
+away from it as a first-class rule, not merely by omission.
+
+`build_user_prompt()` reads from `HealingContext.collector_metadata`,
+not `dom_snapshot` — confirmed directly against
+`actionability_collector.py`'s actual dict keys
+(`target_outer_html`/`target_bounding_box`/
+`blocking_element_from_call_log`/`blocking_element_outer_html`/
+`blocking_element_bounding_box`/`blocking_element_computed_style`)
+rather than assumed, since `dom_snapshot` is explicitly documented as a
+short human-readable summary for a log reader, not the shape a prompt
+should consume. Handles the case where the DOM probe found nothing
+(blocker already gone) by saying so honestly in the prompt text rather
+than fabricating a second confirmation — same principle
+`ActionabilityCollector` itself already applied when building
+`collector_metadata`.
+
+### [Implementation] `actionability_response_parser.py` — parses honestly, does not enforce policy
+
+`parse_actionability_response()` mirrors `response_parser.py`'s three-
+part defensive JSON extraction (fenced block → bare `{...}` → first `{`
+onward for truncated responses) and its "malformed input becomes a
+low-confidence, well-typed result, never a crash" principle — a
+hallucinated `strategy` value that isn't a real
+`ActionabilityStrategyKind` member falls back to `NO_SAFE_RECOVERY` at
+zero confidence via a caught `ValueError`-avoiding membership check
+before ever calling the `Enum` constructor, rather than letting an
+invalid string reach `ActionabilityStrategyKind(strategy_raw)` and
+crash the pipeline.
+
+**Deliberately does NOT reject `force_not_allowed` if the model proposes
+it anyway**, despite the prompt instructing against it. The parser's job
+is to honestly reflect what the model said, not to enforce the
+instruction — and there is currently no live enforcement point to
+bypass even if it wanted to: `Healer` rejects every `ActionabilityStrategy`
+regardless of which `strategy` value it carries (see the Decision entry
+above). If a model disobeys the prompt, that disobedience is itself
+useful information sitting in the decision log for whoever eventually
+builds the execution layer — silently converting it to
+`NO_SAFE_RECOVERY` would erase that signal instead of surfacing it.
+
+`ActionabilityStrategy.reason` is deliberately left `None` by the parser
+and filled in by the caller (`OllamaProvider._parse_response()`) from
+`HealingContext.actionability_reason` — the model's JSON schema never
+asks it to restate which `ActionabilityReason` it was answering for,
+since that's already known from the classifier and re-deriving it from
+free-form model output would just be a second, less reliable source of
+the same fact.
+
+### [Implementation] `OllamaProvider.analyze_failure()` branches on category
+
+`_build_prompt()`/`_parse_response()` route by `HealingContext.category`
+(and, for `ACTIONABILITY`, `actionability_reason`), sharing everything
+else — the HTTP round-trip, `health_check()`, token/timing bookkeeping —
+between both paths. Any category/reason combination neither branch
+recognizes raises `NotImplementedError` explicitly, BEFORE any network
+call happens (confirmed by a dedicated test asserting `httpx.get`/
+`httpx.post` were never called) — this should be structurally
+unreachable today, since `ContextCollector`/`ActionabilityCollector`
+already refuse to build a `HealingContext` for anything but
+`LOCATOR_RESOLUTION` or `ACTIONABILITY`/`RECEIVES_EVENTS`, but the
+provider guards explicitly anyway rather than trusting that invariant to
+hold forever one layer away.
+
+**No changes to `Healer`, `BasePage`, `safe_mode.py`, or
+`decision_logger.py`** — confirmed by running the FULL existing suite,
+not just the new tests, and specifically re-reading `test_healer.py`'s
+unsupported-action-type tests to confirm they still exercise the same
+`isinstance(action, SelectorReplacement)` rejection path unchanged. This
+was true by construction (nothing in this slice touches those files) but
+verified rather than assumed, same discipline as every other slice.
+
+**Verified: 90/90 full unit suite passes** (70 before this slice + 16
+new `parse_actionability_response()` tests, covering every strategy
+value, the hallucinated-value and force-not-allowed cases specifically,
+and all the same defensive-parsing categories `response_parser.py`
+already covers, + 4 new `OllamaProvider` tests — the first unit-level
+tests this provider has ever had, since Sprint 3-5 verification for the
+selector path was live-run-only. `httpx.get`/`.post` mocked throughout;
+no live Ollama call made = 90, confirmed by an actual run). `pyflakes`
+run clean across `phoenix/ai/` and `tests/unit/` before commit, per the
+hygiene-audit habit established earlier this sprint — caught and removed
+one unused `patch` import in the new provider test file.
+
+**Scope, stated explicitly, same as every slice this sprint:** this
+proves the LLM can produce a structured `ActionabilityStrategy` for
+`RECEIVES_EVENTS` — not that PhoenixQA can safely act on one. `Healer`
+still rejects every `ActionabilityStrategy`; `BasePage.click()`/`fill()`
+are unchanged; no wait/dismiss/retry execution exists anywhere. **Not
+yet verified live** (real browser + real Ollama +
+`VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`) — same caveat as the
+previous slice's `ActionabilityCollector` work, now extended one layer
+further down the pipeline. That live run is the deliberate next step,
+before deciding whether to build execution (Option B above) or move on
+to a second `ActionabilityReason`.
+
 ---
 
 ## TODO (future sprints)
@@ -3138,7 +3330,9 @@ once collected. That remains explicitly future work, not an oversight.
 - Sprint 6B implementation: DONE (`ContextCollector` router split) — `phoenix/collector/collectors/` package added (`base_collector.py`, `locator_resolution_collector.py`); `context_collector.py` is now a thin router. Pure refactor, zero behavior change, 64/64 full unit suite verified
 - Sprint 6B: DONE — proactive repo hygiene audit (pyflakes + full-tree `pytest --collect-only`), independent of the ActionabilityCollector work — fixed a duplicate import, two stale docstrings, and deleted two THROWAWAY diagnostic test files that had survived past their own self-documented deletion point. 61/61 unit tests pass, 67/67 collect cleanly across the full `tests/` tree at the time. See "Repo hygiene audit" above
 - Sprint 6B implementation: DONE (`ActionabilityCollector`, `RECEIVES_EVENTS` only) — `phoenix/collector/collectors/actionability_collector.py` gathers two independent blocker confirmations (Playwright's call log + a `document.elementFromPoint()` DOM probe) into `HealingContext.collector_metadata` (new optional field). Backed by a new, deterministic Chaos App mechanism (`pointerEventsOverlay.jsx`, third independent flag alongside `shadow_dom`/`component_remount`). `VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE` still raise `NotImplementedError` — `STABLE` deliberately passed over for now, same non-determinism problem already deprioritized for `DETACHED_FROM_DOM` in Sprint 6A. 70/70 full unit suite verified. **Not yet verified live** (real browser + real Ollama) — everything so far is unit-tested against a mocked `page.evaluate()`, same caveat this project has flagged before shipping a live-verification pass for a new collector
-- Sprint 6B implementation, next steps (NOT started, in order per reviewed plan): (1) `actionability_prompt.py` + a real provider response path so `ActionabilityStrategy` can actually be produced and parsed for `RECEIVES_EVENTS`, not just collected, (2) live verification against real Chaos App + Ollama (`VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`) — the same step that caught real bugs in Sprint 4/5 that unit tests alone could not, (3) only after (1)+(2): decide the second `ActionabilityReason` to implement (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
+- Sprint 6B implementation: DONE (actionability provider path) — `phoenix/ai/prompts/actionability_prompt.py` + `phoenix/ai/actionability_response_parser.py` produce and parse a real, structured `ActionabilityStrategy` for `ACTIONABILITY`/`RECEIVES_EVENTS`, routed through `OllamaProvider.analyze_failure()` by category. `Healer` still rejects `ActionabilityStrategy` as unsupported — deliberately, see "[Decision] Scope of the actionability provider slice." 90/90 unit suite verified. **Not yet verified live.**
+- Sprint 6B, next steps (NOT started, in order per reviewed plan): (1) live verification against real Chaos App + Ollama (`VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`, `HEALING_MODE=safe` or `autonomous`) — confirm the pipeline reaches a real `ActionabilityStrategy` proposal and `Healer` correctly rejects it, original `PlaywrightTimeout` still surfaces to pytest. This is the same category of step that caught real bugs in Sprint 4/5 that unit tests alone could not, (2) only after (1): decide between building actual execution (Option B from the Decision entry — `Healer`/`BasePage` actually carry out `wait_and_retry`/`dismiss_blocker`) versus a second `ActionabilityReason` (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
+- Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`

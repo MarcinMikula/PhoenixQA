@@ -15,15 +15,35 @@ deliberately set aside for this sprint rather than fighting two unknowns
 Sprint 6B (decision): analyze_failure() returns ProviderResult.action
 (a HealingAction, today always a SelectorReplacement), not the old
 ProviderResult.proposal — see phoenix/healing/actions.py.
+
+Sprint 6B (implementation, actionability provider path): analyze_failure()
+now branches on context.category. FailureCategory.LOCATOR_RESOLUTION uses
+the existing selector prompt/parser (phoenix/ai/prompt_templates.py +
+phoenix/ai/response_parser.py), unchanged. FailureCategory.ACTIONABILITY
+with ActionabilityReason.RECEIVES_EVENTS uses the new
+phoenix/ai/prompts/actionability_prompt.py +
+phoenix/ai/actionability_response_parser.py pair. Any other
+category/reason combination reaching this method would mean
+ContextCollector produced a HealingContext for something it has no
+collector for yet — that should be structurally impossible today (see
+ActionabilityCollector, which raises NotImplementedError for the other
+four ActionabilityReason values before a HealingContext ever gets
+built), but this method still guards explicitly rather than silently
+falling through to the selector path on an unrecognized category.
 """
 import logging
 import time
 
 import httpx
 
+from phoenix.ai.actionability_response_parser import parse_actionability_response
 from phoenix.ai.base_provider import BaseProvider, HealingContext, ProviderResult
-from phoenix.ai.prompt_templates import SYSTEM_PROMPT, build_user_prompt
+from phoenix.ai.prompt_templates import SYSTEM_PROMPT as SELECTOR_SYSTEM_PROMPT
+from phoenix.ai.prompt_templates import build_user_prompt as build_selector_user_prompt
+from phoenix.ai.prompts.actionability_prompt import SYSTEM_PROMPT as ACTIONABILITY_SYSTEM_PROMPT
+from phoenix.ai.prompts.actionability_prompt import build_user_prompt as build_actionability_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
+from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -37,19 +57,17 @@ class OllamaProvider(BaseProvider):
 
     def analyze_failure(self, context: HealingContext) -> ProviderResult:
         """
-        Sprint 3 scope: only called for FailureCategory.LOCATOR_RESOLUTION —
-        ContextCollector (Sprint 2/6B) doesn't produce a HealingContext for
-        any other category yet, so this never has to branch on category
-        itself. That branching point lives in Healer (Sprint 4/5) once
-        other categories have real prompts to use.
-
         Sprint 5: returns ProviderResult, not a bare HealingAction —
         HealingBudget needs the token/timing metadata to enforce limits.
         elapsed_ms measures the full HTTP round-trip, not just the
         model's own reported timing, since that's what actually counts
         against a wall-clock budget.
+
+        Prompt/parser selection is branched by category (see module
+        docstring); the HTTP round-trip and token/timing bookkeeping
+        below are shared and unaware of which one was used.
         """
-        user_prompt = build_user_prompt(context)
+        system_prompt, user_prompt = self._build_prompt(context)
 
         # Caught via a real end-to-end run: calling /api/generate with a
         # model that isn't pulled returns a bare 404 from Ollama, which
@@ -71,7 +89,7 @@ class OllamaProvider(BaseProvider):
         payload = {
             "model": self.model,
             "prompt": user_prompt,
-            "system": SYSTEM_PROMPT,
+            "system": system_prompt,
             "stream": False,
         }
 
@@ -91,7 +109,7 @@ class OllamaProvider(BaseProvider):
             f"[Ollama] Response received ({len(raw_content)} chars) in {elapsed_ms}ms"
         )
 
-        action = parse_healing_response(raw_content)
+        action = self._parse_response(context, raw_content)
 
         # Ollama's /api/generate reports prompt_eval_count (input) and
         # eval_count (output) when available — not guaranteed on every
@@ -102,6 +120,50 @@ class OllamaProvider(BaseProvider):
             input_tokens=data.get("prompt_eval_count"),
             output_tokens=data.get("eval_count"),
             elapsed_ms=elapsed_ms,
+        )
+
+    def _build_prompt(self, context: HealingContext) -> tuple:
+        """Returns (system_prompt, user_prompt) for context.category —
+        see module docstring for which pair each category maps to."""
+        if context.category == FailureCategory.LOCATOR_RESOLUTION:
+            return SELECTOR_SYSTEM_PROMPT, build_selector_user_prompt(context)
+
+        if (
+            context.category == FailureCategory.ACTIONABILITY
+            and context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS
+        ):
+            return ACTIONABILITY_SYSTEM_PROMPT, build_actionability_user_prompt(context)
+
+        raise NotImplementedError(
+            f"OllamaProvider has no prompt for category={context.category}, "
+            f"actionability_reason={context.actionability_reason} — "
+            f"ContextCollector should not have produced a HealingContext "
+            f"for this combination yet."
+        )
+
+    def _parse_response(self, context: HealingContext, raw_content: str):
+        """Returns a HealingAction parsed with the same category-specific
+        parser _build_prompt() used to build the prompt — kept as one
+        pair per category so the two never drift apart independently."""
+        if context.category == FailureCategory.LOCATOR_RESOLUTION:
+            return parse_healing_response(raw_content)
+
+        if (
+            context.category == FailureCategory.ACTIONABILITY
+            and context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS
+        ):
+            strategy = parse_actionability_response(raw_content)
+            # The model's own JSON never states which ActionabilityReason
+            # it was answering for — that's context we already know from
+            # the classifier, not something to re-derive from free-form
+            # model output. Filled in here, not by the parser itself (see
+            # actionability_response_parser.py's docstring on this field).
+            strategy.reason = context.actionability_reason
+            return strategy
+
+        raise NotImplementedError(
+            f"OllamaProvider has no parser for category={context.category}, "
+            f"actionability_reason={context.actionability_reason}."
         )
 
     def health_check(self) -> bool:
