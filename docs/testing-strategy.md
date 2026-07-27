@@ -57,12 +57,16 @@ the unit layer is pulling real weight, not just padding a test count.
 **Known gap:** `Healer`/`safe_mode.py` interaction with a real
 Playwright `Page` and a real Ollama call is *not* unit tested — by
 design, since that requires the integration layer below.
-`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering AND the
+`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering and the
 `actionability_prompt.py`/`actionability_response_parser.py` provider
-path built on top of it (both Sprint 6B) have the same gap end to end:
-verified only against a mocked `page.evaluate()`/`httpx`, not yet
-against a real browser + `pointerEventsOverlay.jsx` + a real Ollama call
-— see `docs/gaps.md` Gap #5/#12.
+path built on top of it (both Sprint 6B) are unit-tested only via a
+mocked `page.evaluate()`/`httpx`, same as everything else in this
+section — but have ALSO now been confirmed once against a real browser
++ `pointerEventsOverlay.jsx` + a real Ollama call (see `LEARNINGS.md`
+"Live run confirms the full RECEIVES_EVENTS pipeline, end to end").
+One live run is a confirmation, not a regression guard — the unit
+suite above remains what runs on every commit; see `docs/gaps.md`
+Gap #5/#12 for the current status.
 
 ---
 

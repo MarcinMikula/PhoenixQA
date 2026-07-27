@@ -3290,6 +3290,88 @@ further down the pipeline. That live run is the deliberate next step,
 before deciding whether to build execution (Option B above) or move on
 to a second `ActionabilityReason`.
 
+### [Verification] Live run confirms the full RECEIVES_EVENTS pipeline, end to end
+
+Ran `tests/chaos/test_chaos_login.py::test_successful_login` against a
+real Chaos App + real Ollama (`llama3.2`), isolating `RECEIVES_EVENTS`
+from every other mechanism per direct discussion: `VITE_CHAOS_LEVEL=HIGH`
+with `VITE_OVERRIDE_SELECTOR_ROTATION=false` and
+`VITE_OVERRIDE_DOM_MUTATION=false` (leaving only `async_delay` active,
+which only affects `AddItemForm` and has no bearing on the login
+button), plus `VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`. Confirmed
+before this exercise: with `selector_rotation` left active, the hardcoded
+`BTN_SUBMIT` selector in `ChaosLoginPage` would never resolve at all —
+the failure would classify as `LOCATOR_RESOLUTION`, `Healer` would heal
+the selector, `BasePage.click()`'s single un-wrapped retry would then
+hit the SAME overlay block a second time, and that second exception
+would propagate directly out of `BasePage.click()` without ever
+reaching `Healer` again — the `RECEIVES_EVENTS` path would never
+actually be exercised. This is exactly why `.env.example`'s own
+recommended isolation example (`VITE_OVERRIDE_SELECTOR_ROTATION=false`)
+exists — confirmed necessary in practice, not just in theory, before
+running anything.
+
+`HEALING_MODE=safe`. Ran with `--log-cli-level=DEBUG` specifically to
+get unambiguous proof of the network round-trip, not just a passing/
+failing assertion.
+
+**What the run proved, and how each claim is actually supported —
+not just "it looked right":**
+
+1. **The failure genuinely classified as `ACTIONABILITY`/`RECEIVES_EVENTS`.**
+   Playwright's own call log: `locator resolved to <button.../>` (selector
+   correct) followed by 23 retries all reporting
+   `<div data-testid="chaos-pointer-events-overlay"></div> intercepts
+   pointer events` — the exact signature `parse_playwright_call_log()`
+   requires for this classification.
+2. **`OllamaProvider._build_prompt()` selected the actionability path,
+   not the selector path — proven structurally, not assumed.**
+   `_build_prompt()` runs BEFORE `health_check()` in `analyze_failure()`;
+   an unrecognized category/reason combination raises
+   `NotImplementedError` immediately, before any network call. The debug
+   log shows `GET http://localhost:11434/api/tags "HTTP/1.1 200 OK"` DID
+   happen — meaning `_build_prompt()` did not raise, meaning it matched
+   one of its two known branches. Since the classification (previous
+   point) is deterministically `ACTIONABILITY`/`RECEIVES_EVENTS`, the
+   only branch it could have matched is the actionability one.
+3. **A real LLM response came back and was parsed.**
+   `POST http://localhost:11434/api/generate "HTTP/1.1 200 OK"`, followed
+   by `[Ollama] Response received (255 chars) in 12907ms` — a real
+   round-trip to `llama3.2`, not a mocked or short-circuited one. 255
+   chars is consistent with a compact `ActionabilityStrategy` JSON object
+   (strategy + confidence + one-sentence reasoning + nullable fields),
+   not the longer selector-replacement JSON shape.
+4. **`Healer` correctly rejected the result and the ORIGINAL error
+   reached pytest**, not a healing-internal exception. The pytest
+   traceback shows `base_page.py:83: raise e` — the exact line the
+   Sprint 6A bug fix added (see `pages/base_page.py`'s own docstring) —
+   re-raising the original `PlaywrightTimeout`, with its full call log
+   intact, rather than surfacing `HealingRejectedError`'s own message.
+
+**Observed exactly as predicted, not as a surprise:** no terminal
+accept/reject prompt appeared, even in Safe Mode — `Healer` rejects any
+non-`SelectorReplacement` action via the `isinstance` check BEFORE
+`request_human_review()` is ever called, so there was nothing for a
+human to review. `healing_decisions.log` correctly received NO new
+entry for this run — the same `isinstance` check exits before
+`log_decision()` is reached in both `_attempt_heal_safe()` and
+`_attempt_heal_autonomous()`. Both of these were flagged as expected
+non-findings before the run, not discovered as surprises during it —
+worth recording precisely because a caveat that turns out true on the
+first real run is still worth confirming, not just assuming.
+
+**Conclusion, stated at the precision this run actually supports:**
+the full pipeline — collect actionability context, build the correct
+prompt, get a real structured `ActionabilityStrategy` back from a real
+local LLM, and have `Healer` correctly decline to act on it — is now
+confirmed working end-to-end against real infrastructure, not just
+against mocks. This does NOT confirm the CONTENT of the model's
+proposal was good (which strategy it picked, whether the reasoning was
+sound) — the raw JSON was never inspected in this run, only its
+successful arrival and parsing. Judging proposal quality is a separate
+question from proving the pipeline reaches a proposal at all, and was
+out of scope for this verification pass.
+
 ---
 
 ## TODO (future sprints)
@@ -3331,7 +3413,8 @@ to a second `ActionabilityReason`.
 - Sprint 6B: DONE — proactive repo hygiene audit (pyflakes + full-tree `pytest --collect-only`), independent of the ActionabilityCollector work — fixed a duplicate import, two stale docstrings, and deleted two THROWAWAY diagnostic test files that had survived past their own self-documented deletion point. 61/61 unit tests pass, 67/67 collect cleanly across the full `tests/` tree at the time. See "Repo hygiene audit" above
 - Sprint 6B implementation: DONE (`ActionabilityCollector`, `RECEIVES_EVENTS` only) — `phoenix/collector/collectors/actionability_collector.py` gathers two independent blocker confirmations (Playwright's call log + a `document.elementFromPoint()` DOM probe) into `HealingContext.collector_metadata` (new optional field). Backed by a new, deterministic Chaos App mechanism (`pointerEventsOverlay.jsx`, third independent flag alongside `shadow_dom`/`component_remount`). `VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE` still raise `NotImplementedError` — `STABLE` deliberately passed over for now, same non-determinism problem already deprioritized for `DETACHED_FROM_DOM` in Sprint 6A. 70/70 full unit suite verified. **Not yet verified live** (real browser + real Ollama) — everything so far is unit-tested against a mocked `page.evaluate()`, same caveat this project has flagged before shipping a live-verification pass for a new collector
 - Sprint 6B implementation: DONE (actionability provider path) — `phoenix/ai/prompts/actionability_prompt.py` + `phoenix/ai/actionability_response_parser.py` produce and parse a real, structured `ActionabilityStrategy` for `ACTIONABILITY`/`RECEIVES_EVENTS`, routed through `OllamaProvider.analyze_failure()` by category. `Healer` still rejects `ActionabilityStrategy` as unsupported — deliberately, see "[Decision] Scope of the actionability provider slice." 90/90 unit suite verified. **Not yet verified live.**
-- Sprint 6B, next steps (NOT started, in order per reviewed plan): (1) live verification against real Chaos App + Ollama (`VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`, `HEALING_MODE=safe` or `autonomous`) — confirm the pipeline reaches a real `ActionabilityStrategy` proposal and `Healer` correctly rejects it, original `PlaywrightTimeout` still surfaces to pytest. This is the same category of step that caught real bugs in Sprint 4/5 that unit tests alone could not, (2) only after (1): decide between building actual execution (Option B from the Decision entry — `Healer`/`BasePage` actually carry out `wait_and_retry`/`dismiss_blocker`) versus a second `ActionabilityReason` (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
+- Sprint 6B: DONE — live verification against real Chaos App + Ollama (`llama3.2`), `HIGH` level with `selector_rotation`/`dom_mutation` overridden off + `VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`, `HEALING_MODE=safe`. Confirmed via `--log-cli-level=DEBUG`: real `GET /api/tags` + `POST /api/generate` round-trip, `Healer` correctly rejects the resulting `ActionabilityStrategy`, original `PlaywrightTimeout` (with the `intercepts pointer events` call log) surfaces to pytest unchanged. No terminal prompt, no `healing_decisions.log` entry — both correctly predicted, not surprises. Proposal CONTENT (which strategy, quality of reasoning) not yet inspected — only that a real one arrives and is correctly declined. See "Live run confirms the full RECEIVES_EVENTS pipeline, end to end" above
+- Sprint 6B, open decision (next step): (1) inspect actual `ActionabilityStrategy` proposal content from a live run (currently unverified — did the model pick a sensible strategy for this specific overlay?), (2) decide between building actual execution (Option B from "Scope of the actionability provider slice" — `Healer`/`BasePage` actually carry out `wait_and_retry`/`dismiss_blocker`) versus a second `ActionabilityReason` (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
