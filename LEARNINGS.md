@@ -3372,6 +3372,90 @@ successful arrival and parsing. Judging proposal quality is a separate
 question from proving the pipeline reaches a proposal at all, and was
 out of scope for this verification pass.
 
+### Sprint 6B — live ActionabilityStrategy proposal inspection
+
+**[Verification]** Added one permanent `logger.debug()` line in
+`OllamaProvider._parse_response()`, scoped strictly to the
+`ACTIONABILITY`/`RECEIVES_EVENTS` branch, logging the parsed
+`ActionabilityStrategy`'s `strategy`/`confidence`/`suggested_wait_ms`/
+`blocking_element`/`reasoning` — mirrors the existing symmetric debug
+logging already present for the selector path's HTTP round-trip (same
+file), same risk profile (DEBUG level, opt-in via
+`--log-cli-level=DEBUG`, nothing printed by default), so kept as a
+permanent log line rather than temporary throwaway code removed after
+one run. Protected by a new test
+(`test_parsed_strategy_is_logged_at_debug_level`, `caplog`-based) rather
+than added and left unverified. Re-ran the same live `RECEIVES_EVENTS`
+scenario as the previous entry (`HIGH` level, `selector_rotation`/
+`dom_mutation` overridden off, `VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`,
+`HEALING_MODE=safe`) specifically to capture this line's output — this
+is the deliberate next step that entry's own "Conclusion" flagged as
+still open.
+
+**[Observed model output]**
+- strategy: `wait_and_retry`
+- confidence: `0.83`
+- suggested_wait_ms: `500`
+- blocking_element: `<div data-testid="chaos-pointer-events-overlay" style="position: fixed; top: 0px; left: 0px; width: 100vw; height: 100vh; background: transparent; z-index: 9999;"></div>`
+- reasoning: "The blocker is a full-viewport fixed overlay with
+  pointer-events enabled, suggesting it's persistent but might be
+  transient once dismissed."
+
+**[Assessment]** The proposal was NOT well matched to the actual
+collected context, for two independent reasons — not just "a strategy
+was picked I'd have picked differently":
+
+1. **`wait_and_retry` is factually wrong for THIS specific overlay.**
+   `pointerEventsOverlay.jsx`'s own design (documented above, "a third
+   independent Chaos App flag") is explicit: the overlay is present
+   *continuously* while the flag is active, "not triggered on a timer or
+   a probability roll" — it will never disappear on its own within a
+   test's lifetime. A `wait_and_retry` of 500ms, if it had been executed
+   (it wasn't — `Healer` still rejects), would have failed identically
+   on retry, every time. This is precisely the "wait_and_retry for a
+   permanent overlay → the model is guessing" case flagged as a concern
+   before this run, now observed rather than hypothesized.
+2. **Confidence did not track the uncertainty visible in the model's own
+   reasoning.** The reasoning text itself hedges — "persistent BUT MIGHT
+   BE transient" — yet the strategy field commits confidently to the
+   "transient" interpretation at `confidence=0.83`, not a value that
+   reflects that hedge. This is the same pattern already named as Gap
+   #11 ("confidence ≠ correctness") for the selector path, now
+   empirically observed on the actionability path too, not merely
+   assumed to generalize.
+
+**Explicit limitation of this assessment, stated rather than glossed
+over:** this is a SINGLE sample (n=1). The debug line added here logs
+the PARSED RESULT, not what was actually SENT to the model — the
+existing `"Sending healing prompt (N chars)"` log only reports a
+character count, not content, so it cannot be independently confirmed
+here whether the model was given the target's full `computed_style`
+(specifically `pointerEvents: auto`) and misjudged it, or whether the
+prompt under-specified what "persistent" evidence should have looked
+like. One sample is enough to raise a real, specific concern — not
+enough to conclude the prompt is systematically unreliable. `no_safe_recovery`
+would likely have been the more defensible answer here (no dismiss
+affordance is visible anywhere in `blocking_element`'s HTML), but that
+conclusion also rests on one data point.
+
+**[Decision impact]** This does NOT yet support moving to Option B
+(`Healer`/`BasePage` executing an `ActionabilityStrategy`). Executing a
+`wait_and_retry` that is guaranteed to fail against this exact,
+deterministic Chaos App mechanism would not be a neutral no-op — it
+would burn a full `suggested_wait_ms` + retry cycle for a heal that
+cannot succeed, on every single run, for the one concrete case this
+project has actually built and tested. Before Option B is worth
+building, PhoenixQA needs either (a) a refined prompt that more
+reliably distinguishes "styled to look permanent, no dismiss
+affordance" from "might be transient" — a few-shot example built from
+THIS exact captured overlay HTML would be a direct, evidence-grounded
+next step, not a guess — or (b) a small handful of additional live
+samples (same scenario, repeated) to see whether `wait_and_retry` was a
+one-off or the model's consistent answer for this overlay shape. Either
+of those is cheaper and lower-risk than building execution around a
+proposal whose single observed instance would have made things worse,
+not better, if acted on.
+
 ---
 
 ## TODO (future sprints)
@@ -3414,7 +3498,8 @@ out of scope for this verification pass.
 - Sprint 6B implementation: DONE (`ActionabilityCollector`, `RECEIVES_EVENTS` only) — `phoenix/collector/collectors/actionability_collector.py` gathers two independent blocker confirmations (Playwright's call log + a `document.elementFromPoint()` DOM probe) into `HealingContext.collector_metadata` (new optional field). Backed by a new, deterministic Chaos App mechanism (`pointerEventsOverlay.jsx`, third independent flag alongside `shadow_dom`/`component_remount`). `VISIBLE`/`ENABLED`/`EDITABLE`/`STABLE` still raise `NotImplementedError` — `STABLE` deliberately passed over for now, same non-determinism problem already deprioritized for `DETACHED_FROM_DOM` in Sprint 6A. 70/70 full unit suite verified. **Not yet verified live** (real browser + real Ollama) — everything so far is unit-tested against a mocked `page.evaluate()`, same caveat this project has flagged before shipping a live-verification pass for a new collector
 - Sprint 6B implementation: DONE (actionability provider path) — `phoenix/ai/prompts/actionability_prompt.py` + `phoenix/ai/actionability_response_parser.py` produce and parse a real, structured `ActionabilityStrategy` for `ACTIONABILITY`/`RECEIVES_EVENTS`, routed through `OllamaProvider.analyze_failure()` by category. `Healer` still rejects `ActionabilityStrategy` as unsupported — deliberately, see "[Decision] Scope of the actionability provider slice." 90/90 unit suite verified. **Not yet verified live.**
 - Sprint 6B: DONE — live verification against real Chaos App + Ollama (`llama3.2`), `HIGH` level with `selector_rotation`/`dom_mutation` overridden off + `VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`, `HEALING_MODE=safe`. Confirmed via `--log-cli-level=DEBUG`: real `GET /api/tags` + `POST /api/generate` round-trip, `Healer` correctly rejects the resulting `ActionabilityStrategy`, original `PlaywrightTimeout` (with the `intercepts pointer events` call log) surfaces to pytest unchanged. No terminal prompt, no `healing_decisions.log` entry — both correctly predicted, not surprises. Proposal CONTENT (which strategy, quality of reasoning) not yet inspected — only that a real one arrives and is correctly declined. See "Live run confirms the full RECEIVES_EVENTS pipeline, end to end" above
-- Sprint 6B, open decision (next step): (1) inspect actual `ActionabilityStrategy` proposal content from a live run (currently unverified — did the model pick a sensible strategy for this specific overlay?), (2) decide between building actual execution (Option B from "Scope of the actionability provider slice" — `Healer`/`BasePage` actually carry out `wait_and_retry`/`dismiss_blocker`) versus a second `ActionabilityReason` (`STABLE` still blocked on a deterministic Chaos App mechanism; `VISIBLE`/`ENABLED`/`EDITABLE` are more immediately buildable candidates)
+- Sprint 6B: DONE — inspected a real `ActionabilityStrategy` proposal (`wait_and_retry`, confidence 0.83, `suggested_wait_ms=500`) via a new permanent DEBUG log line in `OllamaProvider._parse_response()`, protected by a test. Finding: the proposal was factually wrong for this specific overlay (`pointerEventsOverlay.jsx` is deliberately permanent, never disappears on its own — see design note above), and confidence didn't track the hedging visible in the model's own reasoning text — an empirical instance of Gap #11 ("confidence ≠ correctness") on the actionability path, not just the selector path. n=1, not yet generalized. See "Sprint 6B — live ActionabilityStrategy proposal inspection" above
+- Sprint 6B, open decision (next step, revised given the finding above): Option B (`Healer`/`BasePage` executing an `ActionabilityStrategy`) is NOT yet supported by the evidence — the one observed proposal would have made things worse if executed. Before reconsidering Option B: (a) try a few-shot prompt refinement built from the actual captured overlay HTML, or (b) gather 2-3 more live samples of the same scenario to see if `wait_and_retry` was a one-off or consistent. Moving to a second `ActionabilityReason` (`VISIBLE`/`ENABLED`/`EDITABLE`; `STABLE` still blocked on a deterministic Chaos App mechanism) remains an independent, unblocked option regardless of how the Option B question resolves
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found

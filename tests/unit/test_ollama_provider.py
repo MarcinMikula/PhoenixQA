@@ -137,6 +137,29 @@ class TestOllamaProviderReceivesEvents:
         # dom_snapshot.
         assert "btn-login" in sent_payload["prompt"]
 
+    def test_parsed_strategy_is_logged_at_debug_level(self, monkeypatch, caplog):
+        # Added specifically to inspect real model output quality before
+        # any Option-B execution decision — see LEARNINGS.md "Sprint 6B
+        # — live ActionabilityStrategy proposal inspection". Protects
+        # the log line itself, not just that parsing succeeds.
+        raw = (
+            '{"strategy": "dismiss_blocker", "confidence": 0.82, '
+            '"reasoning": "Full-viewport overlay above target.", '
+            '"suggested_wait_ms": null, '
+            '"blocking_element": "<div data-testid=\\"chaos-pointer-events-overlay\\"></div>"}'
+        )
+        _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        with caplog.at_level("DEBUG", logger="phoenix.ai.ollama_provider"):
+            provider.analyze_failure(_make_receives_events_context())
+
+        debug_messages = [r.message for r in caplog.records]
+        matching = [m for m in debug_messages if "Parsed ActionabilityStrategy" in m]
+        assert len(matching) == 1
+        assert "strategy=dismiss_blocker" in matching[0]
+        assert "confidence=0.82" in matching[0]
+
     def test_malformed_response_still_returns_a_typed_result_not_a_crash(self, monkeypatch):
         _mock_ollama_http(monkeypatch, "not valid json at all")
 

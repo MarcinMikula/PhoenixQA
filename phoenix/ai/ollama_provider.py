@@ -159,6 +159,24 @@ class OllamaProvider(BaseProvider):
             # model output. Filled in here, not by the parser itself (see
             # actionability_response_parser.py's docstring on this field).
             strategy.reason = context.actionability_reason
+            # DEBUG-only visibility into the parsed proposal itself, not
+            # just that a round-trip happened — added specifically to
+            # inspect real model output quality before any decision about
+            # executing an ActionabilityStrategy (see LEARNINGS.md
+            # "Sprint 6B — live ActionabilityStrategy proposal
+            # inspection"). Mirrors the existing symmetric debug logging
+            # for the selector path's HTTP round-trip above — same risk
+            # profile (DEBUG level, opt-in via --log-cli-level=DEBUG,
+            # nothing printed by default), so kept as a permanent log
+            # line rather than temporary throwaway code, not gated behind
+            # a separate env flag.
+            logger.debug(
+                f"[Ollama] Parsed ActionabilityStrategy: strategy={strategy.strategy.value}, "
+                f"confidence={strategy.confidence:.2f}, "
+                f"suggested_wait_ms={strategy.suggested_wait_ms}, "
+                f"blocking_element={strategy.blocking_element!r}, "
+                f"reasoning={strategy.reasoning!r}"
+            )
             return strategy
 
         raise NotImplementedError(
