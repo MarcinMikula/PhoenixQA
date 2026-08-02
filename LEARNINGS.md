@@ -3456,6 +3456,166 @@ of those is cheaper and lower-risk than building execution around a
 proposal whose single observed instance would have made things worse,
 not better, if acted on.
 
+### Sprint 6B — three more live samples, same scenario: (b) resolved, three new findings (b) alone couldn't have surfaced
+
+Per direct discussion, chose (b) before (a) — gather more samples on the
+UNCHANGED prompt before touching it, so any later prompt change has a
+real baseline to compare against rather than a guess about what needed
+fixing. Ran the identical live scenario (same `.env` config, same
+overlay, same target element) three more times, capturing the same
+DEBUG log line each time. Combined with the original sample from the
+previous entry, this is now **n=4 on an identical input**.
+
+**[Observed model output, all four samples]**
+
+| # | strategy | confidence | blocking_element | reasoning |
+|---|---|---|---|---|
+| 1 | `wait_and_retry` | 0.83 | populated | "persistent but might be transient once dismissed" |
+| 2 | `wait_and_retry` | 0.83 | `None` | "showing no signs of being transient" |
+| 3 | `dismiss_blocker` | 0.80 | populated | "fixed position and z-index 9999... persistent and should be dismissed" |
+| 4 | `wait_and_retry` | 0.95 | `None` | "might be transient (background transparent). Short wait time may allow the overlay to animate out of sight" |
+
+**[Assessment]** Three findings, each independently significant, none
+of which a single sample could have shown:
+
+1. **Genuine non-determinism on an identical input.** 3/4 `wait_and_retry`,
+   1/4 `dismiss_blocker`, same 2227-char prompt every time. Root cause
+   identified directly in code, not inferred: `ollama_provider.py`'s
+   `payload` sends `model`/`prompt`/`system`/`stream` only — no
+   `options.temperature` — so every call runs at Ollama's default
+   sampling temperature for `llama3.2` (not pinned to 0 / deterministic).
+   This matters beyond this one experiment: it means Autonomous Mode
+   could make a DIFFERENT decision on the identical failure on different
+   runs, which is a real property of the current pipeline, not a
+   hypothetical.
+2. **Reasoning and strategy directly contradict each other within a
+   single response** (sample #2): the reasoning states the blocker shows
+   "no signs of being transient," then the strategy field picks
+   `wait_and_retry` anyway — a strategy that only makes sense if the
+   blocker IS expected to go away. Sample #4 shows a related but distinct
+   failure: it invents a causal mechanism with no basis in the provided
+   context ("background: transparent" does not imply anything about
+   whether an element animates away — those are unrelated CSS
+   properties) to justify the same strategy.
+3. **Confidence is not merely uncorrelated with reasoning quality — in
+   this sample, it runs the WRONG way.** Sample #3, the single most
+   internally coherent response (correctly connects `fixed position` +
+   `z-index: 9999` to "persistent," and correctly concludes persistent
+   things need active handling, not waiting), has the LOWEST confidence
+   (0.80) of the four. Sample #4, which fabricates an unsupported causal
+   story, has the HIGHEST (0.95). This is Gap #11 ("confidence ≠
+   correctness") no longer as a named risk but as a measured, inverted
+   correlation on real output.
+
+**Ground truth, unchanged from the previous entry:** `pointerEventsOverlay.jsx`
+has no dismiss affordance and is permanently present while active. Given
+that, `no_safe_recovery` is the best-supported answer available from the
+evidence the collector actually gathers — and it was never proposed, not
+once across four samples. `dismiss_blocker` (sample #3) is the closest
+call: directionally right that the blocker needs active handling rather
+than passive waiting, but there is no actual close control for any
+downstream execution to click, so it would fail differently, not
+succeed, if ever acted on.
+
+**[Decision impact]** (b) is now answered: `wait_and_retry` was not a
+one-off, it is the model's modal (most frequent) answer for this input,
+but the SAME input non-deterministically produces internally
+contradictory reasoning often enough (2/4 samples) that this reads as a
+prompt/sampling problem, not settled model judgment. Two concrete, cheap
+fixes are now identified directly from evidence, not guessed at:
+- **Pin `options.temperature`** (likely to 0, or near it) in
+  `ollama_provider.py`'s request payload — currently unset entirely.
+  This alone should remove sampling-driven non-determinism as a
+  variable, separating "the prompt reliably produces a bad answer" from
+  "the prompt produces a different answer each time" as two different
+  problems needing two different fixes.
+- **Strengthen the prompt** with an explicit self-consistency
+  instruction (reasoning and strategy must not contradict each other)
+  and a few-shot example built from THIS exact captured overlay HTML,
+  showing `no_safe_recovery` as the correct answer when no dismiss
+  affordance is present — grounded in real captured evidence, not an
+  invented example.
+
+Recommended order: temperature fix first (cheap, isolates one variable),
+THEN re-sample before touching prompt wording — if pinning temperature
+alone removes most of the contradiction/confidence-mismatch pattern,
+the prompt itself may need less rework than currently appears. Only
+after both are tried does re-opening Option B or moving to a second
+`ActionabilityReason` become a well-evidenced decision rather than one
+resting on a single ambiguous data point.
+
+### [Decision] Pin both `temperature` AND `seed`, not `temperature` alone
+
+Direct follow-up discussion refined the recommendation above before any
+code was written. `temperature=0` alone was the initial proposal, but
+Ollama's own documented runtime `options` also expose `seed` — set to a
+fixed value, it makes generation reproducible for an identical prompt in
+a way `temperature=0` alone does not fully guarantee (GPU floating-point
+non-associativity can still introduce run-to-run drift even at
+`temperature=0`). Adopted `temperature=0` + `seed=42` together, both in
+the same `options` object Ollama's `/api/generate` already accepts. `42`
+carries no significance beyond being a fixed, memorable constant — any
+fixed value produces the same reproducibility property.
+
+**Explicitly reframed, per direct discussion, what this experiment is
+actually separating.** Not "is the model good or bad" — two genuinely
+different diagnoses, requiring two different fixes:
+
+- **(A) the model samples randomly between good and bad answers** — a
+  sampling/temperature problem, fixed by pinning generation
+- **(B) the model consistently produces the same, possibly wrong,
+  answer** — a prompt/reasoning problem, NOT fixed by pinning generation
+
+Pinning temperature+seed is what makes it possible to tell these apart
+on the next re-run: if 3 pinned re-runs now agree with each other, (A)
+was the dominant effect and the disagreement seen across the 4 unpinned
+samples was sampling noise, not a prompt defect. If pinned re-runs still
+produce `wait_and_retry` for this permanent, non-dismissible overlay,
+that is now a clean, low-noise signal that the PROMPT needs revision,
+not the sampling.
+
+**Decision, stated explicitly for what comes after re-sampling — not
+decided yet, deliberately:** even if pinned re-runs consistently produce
+`dismiss_blocker` instead, that alone still would not justify moving to
+Option B immediately. `dismiss_blocker` is not obviously safe for THIS
+overlay specifically, since `pointerEventsOverlay.jsx` has no actual
+dismiss control for any execution logic to click — a consistent
+`dismiss_blocker` answer would need its own separate follow-up (what
+would "dismissing" this particular overlay even mean, mechanically,
+if there's nothing to click?) before being treated as a green light,
+not just an assumption that "consistent" implies "safe to execute."
+
+### [Implementation] `OLLAMA_TEMPERATURE`/`OLLAMA_SEED` pinned in the shared request payload
+
+Added as module-level constants in `phoenix/ai/ollama_provider.py`,
+applied inside `analyze_failure()`'s `payload["options"]` — this is the
+ONE payload construction shared by both `LOCATOR_RESOLUTION` and
+`ACTIONABILITY` calls (prompt/parser selection branches earlier in the
+method via `_build_prompt()`/`_parse_response()`, but the HTTP payload
+itself does not), so pinning here affects both paths uniformly rather
+than requiring a category-specific carve-out. Deliberate scope choice:
+reproducibility is a general provider-quality property, not something
+specific to the actionability investigation that surfaced the need for
+it — the selector path benefits from the same fix for the same
+underlying reason, even though it wasn't the one under investigation.
+
+Two new tests
+(`TestOllamaProviderReproducibility::test_locator_resolution_request_pins_temperature_and_seed`
+and `::test_receives_events_request_pins_temperature_and_seed`) assert
+directly on the sent HTTP payload's `options` dict for both paths,
+rather than only documenting the intent in a comment that could
+silently drift from the code later.
+
+**Verified: 93/93 full unit suite passes** (91 before this slice + 2 new
+reproducibility tests = 93, confirmed by an actual run). `pyflakes`
+clean across `phoenix/` and `tests/unit/`.
+
+**Not yet re-verified live** — pinning temperature/seed is committed but
+the 3 confirmatory re-runs (per the Decision entry above) have not yet
+been executed against real Chaos App + real Ollama. That live re-run is
+the immediate next step, before any decision about prompt wording or
+Option B.
+
 ---
 
 ## TODO (future sprints)
@@ -3499,7 +3659,9 @@ not better, if acted on.
 - Sprint 6B implementation: DONE (actionability provider path) — `phoenix/ai/prompts/actionability_prompt.py` + `phoenix/ai/actionability_response_parser.py` produce and parse a real, structured `ActionabilityStrategy` for `ACTIONABILITY`/`RECEIVES_EVENTS`, routed through `OllamaProvider.analyze_failure()` by category. `Healer` still rejects `ActionabilityStrategy` as unsupported — deliberately, see "[Decision] Scope of the actionability provider slice." 90/90 unit suite verified. **Not yet verified live.**
 - Sprint 6B: DONE — live verification against real Chaos App + Ollama (`llama3.2`), `HIGH` level with `selector_rotation`/`dom_mutation` overridden off + `VITE_POINTER_EVENTS_OVERLAY_ENABLED=true`, `HEALING_MODE=safe`. Confirmed via `--log-cli-level=DEBUG`: real `GET /api/tags` + `POST /api/generate` round-trip, `Healer` correctly rejects the resulting `ActionabilityStrategy`, original `PlaywrightTimeout` (with the `intercepts pointer events` call log) surfaces to pytest unchanged. No terminal prompt, no `healing_decisions.log` entry — both correctly predicted, not surprises. Proposal CONTENT (which strategy, quality of reasoning) not yet inspected — only that a real one arrives and is correctly declined. See "Live run confirms the full RECEIVES_EVENTS pipeline, end to end" above
 - Sprint 6B: DONE — inspected a real `ActionabilityStrategy` proposal (`wait_and_retry`, confidence 0.83, `suggested_wait_ms=500`) via a new permanent DEBUG log line in `OllamaProvider._parse_response()`, protected by a test. Finding: the proposal was factually wrong for this specific overlay (`pointerEventsOverlay.jsx` is deliberately permanent, never disappears on its own — see design note above), and confidence didn't track the hedging visible in the model's own reasoning text — an empirical instance of Gap #11 ("confidence ≠ correctness") on the actionability path, not just the selector path. n=1, not yet generalized. See "Sprint 6B — live ActionabilityStrategy proposal inspection" above
-- Sprint 6B, open decision (next step, revised given the finding above): Option B (`Healer`/`BasePage` executing an `ActionabilityStrategy`) is NOT yet supported by the evidence — the one observed proposal would have made things worse if executed. Before reconsidering Option B: (a) try a few-shot prompt refinement built from the actual captured overlay HTML, or (b) gather 2-3 more live samples of the same scenario to see if `wait_and_retry` was a one-off or consistent. Moving to a second `ActionabilityReason` (`VISIBLE`/`ENABLED`/`EDITABLE`; `STABLE` still blocked on a deterministic Chaos App mechanism) remains an independent, unblocked option regardless of how the Option B question resolves
+- Sprint 6B: DONE — (b) resolved, 3 more live samples gathered on the unchanged prompt (n=4 total). `wait_and_retry` is the model's modal answer (3/4) but non-deterministic (`ollama_provider.py` never pinned `options.temperature`), and reasoning/strategy directly contradict each other in 2/4 samples. Confidence runs INVERSELY correlated with reasoning coherence in this sample — the most internally consistent response (dismiss_blocker, sample #3) got the lowest confidence (0.80), the response with a fabricated causal justification (sample #4) got the highest (0.95). `no_safe_recovery` — arguably the best-supported answer given no dismiss affordance exists — was never proposed across all 4 samples. See "three more live samples, same scenario" above
+- Sprint 6B: DONE — `OLLAMA_TEMPERATURE=0` + `OLLAMA_SEED=42` pinned in `ollama_provider.py`'s shared request payload (applies to both `LOCATOR_RESOLUTION` and `ACTIONABILITY` calls). Two new tests assert directly on the sent payload. 93/93 unit suite verified. **Not yet live re-verified.** See "Pin both temperature AND seed" and "OLLAMA_TEMPERATURE/OLLAMA_SEED pinned" above
+- Sprint 6B, next step (NOT started): re-run the live `RECEIVES_EVENTS` scenario 3 times with temperature/seed now pinned, to separate (A) "model samples randomly between good and bad answers" from (B) "model consistently produces the same, possibly wrong, answer" — these require different fixes (sampling vs. prompt). If pinned re-runs agree with each other, compare against the unpinned n=4 baseline to see how much disagreement was sampling noise. Only after this: decide whether prompt wording needs revision, and — even if `dismiss_blocker` turns out consistent — investigate separately whether "dismissing" `pointerEventsOverlay.jsx` (which has no actual close control) is even a coherent execution target before treating a consistent answer as safe to act on. Option B and a second `ActionabilityReason` both remain deliberately on hold
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found

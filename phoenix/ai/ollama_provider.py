@@ -30,6 +30,23 @@ ActionabilityCollector, which raises NotImplementedError for the other
 four ActionabilityReason values before a HealingContext ever gets
 built), but this method still guards explicitly rather than silently
 falling through to the selector path on an unrecognized category.
+
+Sprint 6B (reproducibility): analyze_failure() pins both `temperature`
+and `seed` in the request's `options` — Ollama's own default temperature
+(0.8 for llama3.2, per Ollama's documented runtime options) was
+previously left unset entirely. Directly implicated as the cause of a
+real observed problem, not a precaution: four live RECEIVES_EVENTS runs
+against an IDENTICAL prompt returned three different confidence values
+and two different strategies (3x wait_and_retry, 1x dismiss_blocker) —
+see LEARNINGS.md "Sprint 6B — three more live samples, same scenario."
+Pinning `temperature=0` alone reduces (but per Ollama's own docs does
+not strictly guarantee, since GPU floating-point non-associativity can
+still introduce drift) run-to-run variance; adding a fixed `seed`
+addresses the same non-determinism from the sampling side. Together they
+let a future re-run separate two genuinely different diagnoses — "the
+model unreliably samples between good and bad answers" vs. "the model
+reliably produces the same, possibly wrong, answer" — which requires
+knowing sampling is no longer the variable in play.
 """
 import logging
 import time
@@ -47,6 +64,17 @@ from phoenix.collector.failure_classifier import ActionabilityReason, FailureCat
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Sprint 6B — see module docstring "Sprint 6B (reproducibility)" for the
+# full rationale. Applied to EVERY OllamaProvider call (both
+# LOCATOR_RESOLUTION and ACTIONABILITY paths share this one payload
+# construction) — reproducibility is a general provider-quality
+# property, not something specific to the actionability investigation
+# that surfaced the need for it. 42 has no special meaning beyond being
+# a fixed, memorable constant — any fixed value produces the same
+# reproducibility property.
+OLLAMA_TEMPERATURE = 0
+OLLAMA_SEED = 42
 
 
 class OllamaProvider(BaseProvider):
@@ -91,6 +119,10 @@ class OllamaProvider(BaseProvider):
             "prompt": user_prompt,
             "system": system_prompt,
             "stream": False,
+            "options": {
+                "temperature": OLLAMA_TEMPERATURE,
+                "seed": OLLAMA_SEED,
+            },
         }
 
         start = time.monotonic()

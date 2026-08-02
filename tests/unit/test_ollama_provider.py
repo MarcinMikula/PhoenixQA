@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from phoenix.ai.ollama_provider import OllamaProvider
+from phoenix.ai.ollama_provider import OLLAMA_SEED, OLLAMA_TEMPERATURE, OllamaProvider
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.ai.base_provider import HealingContext
 from phoenix.healing.actions import ActionabilityStrategy, SelectorReplacement
@@ -200,3 +200,37 @@ class TestOllamaProviderUnsupportedCombination:
 
         get_mock.assert_not_called()
         post_mock.assert_not_called()
+
+
+@pytest.mark.unit
+class TestOllamaProviderReproducibility:
+    # Added after a real finding, not a precaution: four live
+    # RECEIVES_EVENTS runs against an identical prompt returned three
+    # different confidence values and two different strategies (3x
+    # wait_and_retry, 1x dismiss_blocker) — see LEARNINGS.md "Sprint 6B
+    # — three more live samples, same scenario." Root cause: temperature
+    # was left entirely unset, defaulting to Ollama's own sampling
+    # temperature. These tests protect the fix, not just document intent
+    # in a comment that could silently drift from the code.
+
+    def test_locator_resolution_request_pins_temperature_and_seed(self, monkeypatch):
+        raw = '{"proposed_selector": "[data-testid=\\"x\\"]", "confidence": 0.9, "reasoning": "ok", "alternative_selectors": []}'
+        post_mock = _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        provider.analyze_failure(_make_locator_resolution_context())
+
+        sent_payload = post_mock.call_args.kwargs["json"]
+        assert sent_payload["options"] == {"temperature": OLLAMA_TEMPERATURE, "seed": OLLAMA_SEED}
+        assert OLLAMA_TEMPERATURE == 0
+        assert isinstance(OLLAMA_SEED, int)
+
+    def test_receives_events_request_pins_temperature_and_seed(self, monkeypatch):
+        raw = '{"strategy": "no_safe_recovery", "confidence": 0.3, "reasoning": "ok", "suggested_wait_ms": null, "blocking_element": null}'
+        post_mock = _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        provider.analyze_failure(_make_receives_events_context())
+
+        sent_payload = post_mock.call_args.kwargs["json"]
+        assert sent_payload["options"] == {"temperature": OLLAMA_TEMPERATURE, "seed": OLLAMA_SEED}
