@@ -40,16 +40,23 @@ These two sources may agree, partially agree, or disagree. Read both before deci
 
 HOW TO DECIDE — follow these steps in order:
 1. Look at the blocking element's HTML, computed style (position, z-index, pointer-events, opacity, display, visibility), and bounding box.
-2. If the blocker looks TRANSIENT — a loading spinner, a fade-in banner, something whose style suggests it is animating or about to disappear on its own — propose "wait_and_retry" with a short suggested_wait_ms (typically 300-2000).
-3. If the blocker looks PERSISTENT but DISMISSIBLE — a cookie-consent banner, a modal with an obvious close affordance, a sticky element that would normally be closed by a real user before proceeding — propose "dismiss_blocker" and name the blocking element in the "blocking_element" field, copied from the HTML you were given.
-4. If you cannot form a confident opinion about what the blocker is or how a real user would resolve it, propose "no_safe_recovery" with a low confidence score (below 0.3) rather than guessing.
-5. Do NOT propose "force_not_allowed" (bypassing Playwright's own actionability check). A real user's mouse click would be blocked by the same overlay a force-click ignores — proposing a bypass would hide a genuine UI problem instead of describing it honestly. This option exists in the system but must never be the one you choose.
+2. Decide whether the blocker looks TRANSIENT — a loading spinner, a fade-in banner, something whose style suggests it is actively animating or about to disappear on its own (e.g. an opacity/transform transition, a known "toast" or "spinner" pattern). If so, propose "wait_and_retry" with a short suggested_wait_ms (typically 300-2000).
+3. If the blocker is NOT transient (it looks persistent — plain, static styling, full-viewport, no animation indicators), look SPECIFICALLY inside the blocker's own HTML for an actual DISMISS AFFORDANCE: a button, link, or other interactive element whose text or attributes suggest closing/accepting/dismissing (e.g. "Accept", "Close", "×", "Got it", a <button> or <a> tag). Only propose "dismiss_blocker" if you can point to a SPECIFIC interactive element for this purpose — put THAT element's HTML (not the whole blocker container) in "blocking_element".
+4. If the blocker is persistent AND you found no dismiss affordance anywhere in its HTML, propose "no_safe_recovery". This is not merely a fallback for uncertainty — it is the CORRECT, confident answer when a blocker is clearly there to stay and there is nothing in the page for a real user (or a script) to interact with to remove it. A plain, empty, full-viewport <div> with no text or controls is exactly this case.
+5. Use "no_safe_recovery" at low confidence (below 0.3) only for the genuinely different situation of not being able to tell what the blocker even is from the evidence given.
+6. Do NOT propose "force_not_allowed" (bypassing Playwright's own actionability check). A real user's mouse click would be blocked by the same overlay a force-click ignores — proposing a bypass would hide a genuine UI problem instead of describing it honestly. This option exists in the system but must never be the one you choose.
 
-EXAMPLE:
-Blocking element (call log): a full-viewport div with data-testid "chaos-pointer-events-overlay"
-Blocking element HTML: <div data-testid="chaos-pointer-events-overlay" style="position: fixed; z-index: 9999; ..."></div>
+CRITICAL SELF-CONSISTENCY CHECK — perform this before writing your final answer: re-read your own "reasoning" against your chosen "strategy". If your reasoning states or implies the blocker is persistent, not transient, or will not go away on its own, "wait_and_retry" is WRONG regardless of how the rest of your reasoning sounds — waiting only makes sense if you believe the blocker will actually disappear. Choose "dismiss_blocker" (only with a specific affordance identified) or "no_safe_recovery" instead.
+
+EXAMPLE 1 — persistent blocker WITH a dismiss affordance:
+Blocking element HTML: <div class="cookie-consent-banner"><p>We use cookies to improve your experience.</p><button data-testid="cookie-accept">Accept</button></div>
+Computed style: position: fixed, zIndex: 2000, pointerEvents: auto, opacity: 1, display: block, visibility: visible
+Correct response: {"strategy": "dismiss_blocker", "confidence": 0.85, "reasoning": "A cookie-consent banner is blocking the target; it is persistent (no animation indicators) but has a visible Accept button to dismiss it.", "suggested_wait_ms": null, "blocking_element": "<button data-testid=\\"cookie-accept\\">Accept</button>"}
+
+EXAMPLE 2 — persistent blocker with NO dismiss affordance (real captured case from this project's own Chaos App):
+Blocking element HTML: <div data-testid="chaos-pointer-events-overlay" style="position: fixed; top: 0px; left: 0px; width: 100vw; height: 100vh; background: transparent; z-index: 9999;"></div>
 Computed style: position: fixed, zIndex: 9999, pointerEvents: auto, opacity: 1, display: block, visibility: visible
-Correct response: {"strategy": "dismiss_blocker", "confidence": 0.82, "reasoning": "A full-viewport fixed overlay with pointer-events enabled sits above the target and shows no sign of being transient.", "suggested_wait_ms": null, "blocking_element": "<div data-testid=\\"chaos-pointer-events-overlay\\" style=\\"position: fixed; z-index: 9999;\\"></div>"}
+Correct response: {"strategy": "no_safe_recovery", "confidence": 0.75, "reasoning": "The overlay is a full-viewport fixed div with no text, buttons, or links anywhere in its HTML and no styling suggesting it will disappear — there is nothing to wait for and nothing to dismiss.", "suggested_wait_ms": null, "blocking_element": null}
 
 You MUST respond with ONLY a JSON object, no other text before or after it, in exactly this shape:
 
@@ -58,12 +65,12 @@ You MUST respond with ONLY a JSON object, no other text before or after it, in e
   "confidence": 0.0 to 1.0,
   "reasoning": "one or two sentences naming the SPECIFIC evidence (element, style, or its absence) that led to this strategy",
   "suggested_wait_ms": "an integer number of milliseconds if strategy is wait_and_retry, otherwise null",
-  "blocking_element": "the blocking element's HTML if one was identified and is relevant to the strategy, otherwise null"
+  "blocking_element": "the SPECIFIC dismiss-affordance element's HTML if strategy is dismiss_blocker, otherwise null"
 }
 
 Rules:
 - confidence should reflect how certain you are this is the RIGHT recovery strategy, not just that something is blocking the target
-- never propose "force_not_allowed" — see step 5 above
+- never propose "force_not_allowed" — see step 6 above
 - if the two blocker sources disagree, say so in "reasoning" rather than silently picking one
 - do not include explanation text outside the JSON object — your entire response must be parseable as JSON
 - keep "reasoning" to one short sentence — brevity matters more than detail, a long reasoning field risks an incomplete response

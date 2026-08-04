@@ -3662,6 +3662,80 @@ auto`, `z-index: 9999`, no dismiss affordance) showing `no_safe_recovery`
 as the correct answer — grounded in the real, repeatedly-captured
 evidence from this investigation, not a hypothetical case.
 
+### [Implementation] `actionability_prompt.py` revised — the original few-shot example was itself teaching the bug
+
+Before writing the revision, re-read the existing `SYSTEM_PROMPT`'s
+single `EXAMPLE` closely — and found the likely root cause sitting in
+plain sight. That example's blocking element HTML was
+`style="position: fixed; z-index: 9999; ..."` with `pointerEvents: auto`,
+and its "correct" answer was `dismiss_blocker` with reasoning "shows no
+sign of being transient." That styling is nearly identical to the REAL
+`pointerEventsOverlay.jsx` this investigation has been testing against
+— and the reasoning text is the same "persistent, therefore [wrong
+strategy]" shape the live runs kept producing. The example was written
+speculatively, before any live overlay had actually been captured, and
+it was never revisited once real evidence existed. This doesn't fully
+explain the `wait_and_retry` responses (the example itself demonstrated
+`dismiss_blocker`, not `wait_and_retry`), but it does show the prompt
+was never actually grounded in the real Chaos App mechanism it was
+written for — worth naming plainly rather than treated as incidental.
+
+**Three changes made together, not just the two originally scoped:**
+
+1. **Self-consistency instruction added**, as planned — an explicit
+   "re-read your own reasoning against your chosen strategy" check,
+   naming the exact failure mode observed (reasoning states persistent/
+   not transient, strategy picks `wait_and_retry` anyway).
+2. **The single example replaced with two, both grounded in real
+   evidence, not one — a positive and negative case.** A prompt that
+   only ever demonstrates `no_safe_recovery` risks teaching the model to
+   default there regardless of context, which would trade one bias for
+   another rather than fixing the underlying gap. EXAMPLE 1 is a
+   cookie-consent banner WITH a real `<button>` — demonstrating
+   `dismiss_blocker` still has a legitimate, correctly-triggered use.
+   EXAMPLE 2 uses the ACTUAL `chaos-pointer-events-overlay` HTML this
+   project has repeatedly captured, now correctly paired with
+   `no_safe_recovery`.
+3. **Decision step 3/4 restructured to require finding a SPECIFIC
+   interactive dismiss affordance** (a named `<button>`/`<a>`/similar
+   with dismiss-suggesting text) before `dismiss_blocker` is allowed at
+   all — not just "the blocker looks dismissible" as a vibe. `no_safe_recovery`
+   is reframed explicitly as "the correct, confident answer" for a
+   persistent blocker with nothing to interact with, not merely a
+   fallback for uncertainty (the original prompt only offered it framed
+   as the latter, which may itself have discouraged the model from
+   reaching for it even when the evidence supported it). The
+   `blocking_element` JSON field description now asks for the specific
+   dismiss control's HTML, not the whole blocker container, so a future
+   execution layer would have something precise to act on rather than
+   an entire overlay `<div>`.
+
+**New test file** `tests/unit/test_actionability_prompt.py` (previously
+missing entirely — the prompt itself had zero direct test coverage,
+only indirect coverage via `test_ollama_provider.py`'s payload
+assertions). Protects: the self-consistency instruction's presence, the
+corrected `no_safe_recovery` example matching the real overlay HTML
+(regression guard against reintroducing the original misleading
+`dismiss_blocker` example), the retained positive `dismiss_blocker`
+example (guard against overcorrecting to always answer
+`no_safe_recovery`), the `blocking_element` field's narrowed
+description, and `build_user_prompt()`'s rendering logic (target/blocker
+HTML inclusion, honest "DOM probe found nothing" messaging) — previously
+only exercised indirectly.
+
+**Verified: 101/101 full unit suite passes** (93 before this slice + 8
+new prompt-content/rendering tests = 101, confirmed by an actual run).
+`pyflakes` clean.
+
+**Not yet live re-verified.** The next concrete step is re-running the
+same live `RECEIVES_EVENTS` scenario with temperature/seed still pinned
+(so any change in output is attributable to the prompt, not sampling —
+per the recommended order set two entries ago) to see whether the
+revised prompt actually produces `no_safe_recovery` (or a correctly-
+justified `dismiss_blocker`, if a future overlay variant ever has a real
+affordance) instead of the deterministic, self-contradictory
+`wait_and_retry` observed three times running on the unrevised prompt.
+
 ---
 
 ## TODO (future sprints)
@@ -3708,7 +3782,8 @@ evidence from this investigation, not a hypothetical case.
 - Sprint 6B: DONE — (b) resolved, 3 more live samples gathered on the unchanged prompt (n=4 total). `wait_and_retry` is the model's modal answer (3/4) but non-deterministic (`ollama_provider.py` never pinned `options.temperature`), and reasoning/strategy directly contradict each other in 2/4 samples. Confidence runs INVERSELY correlated with reasoning coherence in this sample — the most internally consistent response (dismiss_blocker, sample #3) got the lowest confidence (0.80), the response with a fabricated causal justification (sample #4) got the highest (0.95). `no_safe_recovery` — arguably the best-supported answer given no dismiss affordance exists — was never proposed across all 4 samples. See "three more live samples, same scenario" above
 - Sprint 6B: DONE — `OLLAMA_TEMPERATURE=0` + `OLLAMA_SEED=42` pinned in `ollama_provider.py`'s shared request payload (applies to both `LOCATOR_RESOLUTION` and `ACTIONABILITY` calls). Two new tests assert directly on the sent payload. 93/93 unit suite verified. **Not yet live re-verified.** See "Pin both temperature AND seed" and "OLLAMA_TEMPERATURE/OLLAMA_SEED pinned" above
 - Sprint 6B: DONE — 3 confirmatory re-runs with temperature/seed pinned, byte-for-byte identical output every time (`wait_and_retry`, confidence 0.80, same reasoning text verbatim). Confirms diagnosis (B): this is a deterministic prompt problem, not sampling noise — the model consistently states the blocker is "persistent but not transient" then picks `wait_and_retry` anyway, the entire premise of which requires transience. See "Confirmatory re-runs resolve A vs B" above
-- Sprint 6B, next step (NOT started): revise `actionability_prompt.py` with (1) an explicit self-consistency rule tying the transient/persistent judgment directly to the allowed strategy — the current prompt asks for both but never enforces they agree, and (2) a few-shot example built from the exact captured overlay (`fixed`, `pointer-events: auto`, `z-index: 9999`, no dismiss affordance) showing `no_safe_recovery` as correct. Re-verify with pinned temperature/seed after the prompt change so any improvement is attributable to the prompt, not sampling. Option B and a second `ActionabilityReason` both remain deliberately on hold until the revised prompt is verified
+- Sprint 6B: DONE — `actionability_prompt.py` revised: self-consistency check added, single misleading example (which itself demonstrated `dismiss_blocker` for near-identical styling to the real overlay) replaced with two grounded examples (positive `dismiss_blocker` with a real affordance, corrected `no_safe_recovery` using the actual captured `chaos-pointer-events-overlay` HTML), decision steps restructured to require a SPECIFIC dismiss affordance before `dismiss_blocker` is allowed. New `test_actionability_prompt.py` (8 tests) — the prompt had zero direct test coverage before this. 101/101 unit suite verified. See "actionability_prompt.py revised — the original few-shot example was itself teaching the bug" above
+- Sprint 6B, next step (NOT started): re-run the live `RECEIVES_EVENTS` scenario with temperature/seed still pinned against the REVISED prompt, to see whether it now produces `no_safe_recovery` (or a correctly-justified `dismiss_blocker`) instead of the deterministic `wait_and_retry` observed on the unrevised prompt. Option B and a second `ActionabilityReason` both remain deliberately on hold until this is verified
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
