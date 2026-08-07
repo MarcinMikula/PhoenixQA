@@ -27,6 +27,17 @@ just one:
      text alone, since it's Playwright's unversioned diagnostic wording
      (see Gap #13), not a stable API. If the two ever disagree, a future
      prompt has both to reconcile rather than one unverified source.
+
+computed_style also captures animationName/transitionProperty (Sprint 6B,
+added alongside actionability_policy.py): the only two fields in this
+collector that constitute genuine POSITIVE evidence a blocker is
+transient, as opposed to position/zIndex/pointerEvents/opacity/display/
+visibility, which describe WHERE and WHETHER something blocks, not
+whether it is expected to go away. Added specifically because
+actionability_policy.py's WAIT_AND_RETRY validation needs a real field
+to check — without these two, "evidence of transience" was structurally
+undetectable (see LEARNINGS.md "Sprint 6B — deterministic policy
+guardrail for ActionabilityStrategy").
 """
 from typing import Optional
 
@@ -70,6 +81,8 @@ _GATHER_RECEIVES_EVENTS_CONTEXT_JS = """
                     opacity: style.opacity,
                     display: style.display,
                     visibility: style.visibility,
+                    animationName: style.animationName,
+                    transitionProperty: style.transitionProperty,
                 },
             };
         }

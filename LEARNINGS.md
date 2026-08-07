@@ -3736,6 +3736,168 @@ justified `dismiss_blocker`, if a future overlay variant ever has a real
 affordance) instead of the deterministic, self-contradictory
 `wait_and_retry` observed three times running on the unrevised prompt.
 
+### [Verification] Live re-runs on the revised prompt: still `wait_and_retry`, but now with FULLY CORRECT reasoning
+
+Ran the live `RECEIVES_EVENTS` scenario 3 times against the revised
+prompt, temperature/seed still pinned.
+
+**[Observed model output, all three runs]**
+```
+strategy=wait_and_retry
+confidence=0.80
+suggested_wait_ms=300 (runs 1-2) / 300 (run 3, same)
+blocking_element=None
+reasoning="The blocker is persistent (fixed position with high
+z-index) but has no dismiss affordance; waiting for it to potentially
+disappear on its own may be the best approach." (runs 1-2, byte-for-byte
+identical, 270 chars) / "...may succeed." (run 3, 257 chars — one clause
+reworded, everything substantive identical)
+```
+
+**[Assessment]** The revised prompt's two explicit teaching goals were
+BOTH achieved — the model now correctly names "persistent" AND
+"no dismiss affordance," the exact two facts EXAMPLE 2 was built to
+teach, and does so far more precisely than any of the four pre-revision
+samples (no fabricated causal story, no internal hedge). The
+self-consistency instruction, however, still did not hold: the model
+states the two facts that the prompt's own decision tree maps directly
+to `no_safe_recovery`, and picks `wait_and_retry` anyway, with softened
+language ("may be the best approach," "may succeed") that reads as the
+model itself signaling low confidence in its own strategy choice while
+still assigning it 0.80.
+
+This is a materially different — and more informative — result than
+"the prompt didn't work." The prompt fixed the DIAGNOSIS. It did not
+fix the DECISION. Those are two separable capabilities, and this is
+now direct, repeated (3/3), evidence that a small local model
+(`llama3.2`) can reliably fail at the second while succeeding at the
+first, even when explicitly instructed, in the same prompt, that the
+diagnosis determines the decision.
+
+**[Decision impact]** Further prompt iteration on this specific gap
+was judged, per direct discussion, unlikely to be a good use of effort
+— the model isn't missing information or misreading evidence anymore;
+it is not reliably applying a rule it can state. Decided NOT to keep
+tightening prompt wording as the next move. See "[Decision] LLM
+proposes, PhoenixQA validates" below for the architectural response
+this motivated instead.
+
+### [Decision] LLM proposes, PhoenixQA validates — a deterministic policy guardrail, not more prompt engineering
+
+Direct discussion, following the finding above. Two options were
+weighed for how to close this gap for real:
+
+**Option 1 (rejected) — keyword-check the model's `reasoning` text**
+(e.g. flag `wait_and_retry` if `reasoning` contains "persistent" or
+"not transient"). Rejected as fragile in exactly the way natural
+language always is: the same judgment could be phrased a dozen
+different ways ("long-lived," "won't disappear," "sticking around," in
+English or otherwise), and a keyword-matching validator would be
+chasing phrasings indefinitely — itself a small, brittle LLM-output
+parser living inside the codebase, the opposite of the deterministic
+guarantee this project has tried to build everywhere else (tokenized
+selector matching, structured `ClassifiedFailure`, `collector_metadata`
+as structured data rather than prose).
+
+**Option 2 (adopted) — validate the proposed strategy against
+`collector_metadata`**, the collector's own structured, deterministic
+DOM facts, not against anything the model said. The LLM's `reasoning`
+field stays purely informational — useful for a human reading a log,
+irrelevant to what PhoenixQA actually trusts as evidence. This directly
+extends a design principle already used everywhere else in Sprint 6B
+(the classifier producing structured `ClassifiedFailure` instead of
+string matching on error text downstream; the collector gathering
+structured `collector_metadata` instead of only a prose `dom_snapshot`)
+to the NEW place this project has never needed it before: the model's
+own OUTPUT, not just its input.
+
+**Principle, stated directly, per the discussion that produced it:**
+"the LLM may propose. PhoenixQA does not treat that proposal as the
+final word — it validates the proposal against hard evidence." This is
+a genuinely new architectural layer, not a bigger prompt: previously,
+`Healer`'s only defense against a bad `ActionabilityStrategy` was
+rejecting the entire type category (still true — nothing executes any
+`ActionabilityStrategy` yet). This is the first place in the pipeline
+where a SPECIFIC proposal, of a type the architecture is otherwise
+prepared to trust, gets checked against ground truth before being
+treated as safe to log or reason about further.
+
+**Scope, deliberately narrow:** one rule, for `RECEIVES_EVENTS` only —
+`WAIT_AND_RETRY` requires positive evidence, from `collector_metadata`,
+that the blocker is actually transient. Not a general-purpose validator
+for all five `ActionabilityReason` values (four don't have collectors
+yet) or all four `ActionabilityStrategyKind` values (only
+`WAIT_AND_RETRY` has an observed, live-confirmed failure mode;
+`DISMISS_BLOCKER`'s `blocking_element` could in principle be validated
+against the DOM too, but doing so now would be designing a rule with no
+observed failure to justify it — see this project's "one vertical slice
+at a time" discipline, applied here to policy rules the same way it's
+been applied to collectors and prompts all sprint).
+
+### [Implementation] `actionability_policy.py` — and a gap found before it could even be built
+
+Before writing the validator, checked what `collector_metadata` actually
+contains today (`ActionabilityCollector`, previous slices):
+`position`/`zIndex`/`pointerEvents`/`opacity`/`display`/`visibility` —
+NONE of which describes whether something is animating or transitioning.
+A "does the evidence support transience" check would have had no real
+evidence to check against; every `WAIT_AND_RETRY` proposal would have
+been corrected unconditionally, which happens to match this project's
+one real captured overlay (genuinely static) but would make the
+validator's "positive evidence" branch permanently dead code — not an
+honest evidence-based gate, just a disguised unconditional override.
+
+**Fixed by extending `ActionabilityCollector` first**, not by building
+the validator around a gap and calling it done. Added `animationName`
+and `transitionProperty` to the DOM probe's captured computed style —
+two standard CSS properties whose default value (`"none"`) is itself a
+real, structural "no evidence" signal, and any other value is real
+positive evidence, not an inference from prose. New collector test
+(`test_animation_and_transition_style_pass_through_for_policy_validation`)
+protects this specific dependency — a regression here would silently
+make the policy's evidence check permanently unreachable again.
+
+`phoenix/healing/actionability_policy.py` (new file):
+`validate_receives_events_strategy(strategy, context) ->
+ActionabilityStrategy`. Returns a NEW object via `dataclasses.replace`
+rather than mutating in place, so a caller that already captured the
+original proposal (the DEBUG log, see below) keeps an intact record.
+Every non-`WAIT_AND_RETRY` strategy value passes through completely
+unmodified — confirmed by a parametrized test covering all four other
+`ActionabilityStrategyKind` values, including `FORCE_NOT_ALLOWED` (the
+prompt already discourages it; this policy deliberately does not ALSO
+police it — one rule, for one observed failure, not creeping scope).
+
+`ActionabilityStrategy` (`phoenix/healing/actions.py`) gained three new
+fields: `corrected_by_policy: bool`, `original_strategy: Optional[...]`,
+`policy_reason: Optional[str]` — populated only by the policy layer,
+never by the parser or provider directly, so `corrected_by_policy=False`
+unambiguously means "exactly what the model proposed."
+
+**Wired into `OllamaProvider._parse_response()`**, applied AFTER the
+existing raw-proposal DEBUG log, not before — the diagnostic log line
+added two slices ago must keep showing exactly what the model said,
+unmodified, regardless of what the policy does next; the correction
+itself gets its own, separate `logger.info()` line
+(`"Policy corrected ActionabilityStrategy: wait_and_retry ->
+no_safe_recovery (...)"`), so both the original proposal and the
+correction are independently visible in a log, not one silently
+replacing the other.
+
+**Verified: 113/113 full unit suite passes** (101 before this slice +
+10 new `actionability_policy.py` tests + 1 new collector test + 1 new
+end-to-end `OllamaProvider` test confirming the correction fires and
+both log lines appear = 113, confirmed by an actual run). `pyflakes`
+clean across `phoenix/` and `tests/unit/`.
+
+**Not yet live re-verified with this policy layer in place.** The next
+concrete step is re-running the same live scenario once more — this
+time, `analyze_failure()` should return `NO_SAFE_RECOVERY`
+(`corrected_by_policy=True`) even though the model itself still proposes
+`wait_and_retry`, since the real captured overlay has never shown
+animation/transition evidence in any of the seven live samples gathered
+across this investigation so far.
+
 ---
 
 ## TODO (future sprints)
@@ -3783,7 +3945,9 @@ affordance) instead of the deterministic, self-contradictory
 - Sprint 6B: DONE — `OLLAMA_TEMPERATURE=0` + `OLLAMA_SEED=42` pinned in `ollama_provider.py`'s shared request payload (applies to both `LOCATOR_RESOLUTION` and `ACTIONABILITY` calls). Two new tests assert directly on the sent payload. 93/93 unit suite verified. **Not yet live re-verified.** See "Pin both temperature AND seed" and "OLLAMA_TEMPERATURE/OLLAMA_SEED pinned" above
 - Sprint 6B: DONE — 3 confirmatory re-runs with temperature/seed pinned, byte-for-byte identical output every time (`wait_and_retry`, confidence 0.80, same reasoning text verbatim). Confirms diagnosis (B): this is a deterministic prompt problem, not sampling noise — the model consistently states the blocker is "persistent but not transient" then picks `wait_and_retry` anyway, the entire premise of which requires transience. See "Confirmatory re-runs resolve A vs B" above
 - Sprint 6B: DONE — `actionability_prompt.py` revised: self-consistency check added, single misleading example (which itself demonstrated `dismiss_blocker` for near-identical styling to the real overlay) replaced with two grounded examples (positive `dismiss_blocker` with a real affordance, corrected `no_safe_recovery` using the actual captured `chaos-pointer-events-overlay` HTML), decision steps restructured to require a SPECIFIC dismiss affordance before `dismiss_blocker` is allowed. New `test_actionability_prompt.py` (8 tests) — the prompt had zero direct test coverage before this. 101/101 unit suite verified. See "actionability_prompt.py revised — the original few-shot example was itself teaching the bug" above
-- Sprint 6B, next step (NOT started): re-run the live `RECEIVES_EVENTS` scenario with temperature/seed still pinned against the REVISED prompt, to see whether it now produces `no_safe_recovery` (or a correctly-justified `dismiss_blocker`) instead of the deterministic `wait_and_retry` observed on the unrevised prompt. Option B and a second `ActionabilityReason` both remain deliberately on hold until this is verified
+- Sprint 6B: DONE — revised prompt re-verified live (3 runs, pinned temperature/seed): diagnosis is now fully correct ("persistent," "no dismiss affordance," precisely matching EXAMPLE 2's teaching), but the model still deterministically chooses `wait_and_retry` despite stating the facts that its own decision tree maps to `no_safe_recovery`. Prompt engineering fixed the diagnosis, not the decision — judged not worth further prompt iteration. See "Live re-runs on the revised prompt" above
+- Sprint 6B: DONE — `actionability_policy.py` built as the architectural response: a deterministic guardrail validating `WAIT_AND_RETRY` against `collector_metadata` (structured DOM facts), not the model's reasoning text. Required first extending `ActionabilityCollector` to capture `animationName`/`transitionProperty` — without them, "positive evidence of transience" was structurally undetectable, a gap found before the validator could even be built correctly. Wired into `OllamaProvider._parse_response()`, with the correction independently logged (`logger.info`) alongside the unmodified raw proposal (existing `logger.debug`). `ActionabilityStrategy` gained `corrected_by_policy`/`original_strategy`/`policy_reason` fields. 113/113 unit suite verified. See "[Decision] LLM proposes, PhoenixQA validates" and "actionability_policy.py — and a gap found before it could even be built" above
+- Sprint 6B, next step (NOT started): live re-verification with the policy layer in place — confirm `analyze_failure()` now returns `NO_SAFE_RECOVERY` (`corrected_by_policy=True`) for the real overlay even though the model itself still proposes `wait_and_retry`. Option B and a second `ActionabilityReason` both remain deliberately on hold. Comparing `llama3.2` against a larger/cloud model (e.g. finishing `AnthropicProvider`, currently a stub) remains a legitimate future research question but explicitly does NOT block or substitute for this policy layer — per direct discussion, "PhoenixQA cannot base execution safety on the assumption that a model will usually apply a rule correctly," regardless of which model
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found

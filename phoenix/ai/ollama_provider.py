@@ -47,6 +47,20 @@ let a future re-run separate two genuinely different diagnoses — "the
 model unreliably samples between good and bad answers" vs. "the model
 reliably produces the same, possibly wrong, answer" — which requires
 knowing sampling is no longer the variable in play.
+
+Sprint 6B (policy guardrail): even with temperature/seed pinned and a
+revised prompt (explicit self-consistency instruction, corrected
+few-shot examples), llama3.2 still deterministically proposed
+wait_and_retry for a blocker it had itself correctly described, in the
+same response, as persistent with no dismiss affordance — see
+LEARNINGS.md "actionability_prompt.py revised" and its live-verification
+follow-up. Prompt engineering alone was not sufficient. _parse_response()
+now runs every RECEIVES_EVENTS proposal through
+phoenix/healing/actionability_policy.py before returning it — a
+deterministic check against collector_metadata (not the model's
+reasoning text) that can override an unsafe wait_and_retry proposal.
+The model proposes; this policy validates. See that module's docstring
+for the full reasoning.
 """
 import logging
 import time
@@ -61,6 +75,7 @@ from phoenix.ai.prompts.actionability_prompt import SYSTEM_PROMPT as ACTIONABILI
 from phoenix.ai.prompts.actionability_prompt import build_user_prompt as build_actionability_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
+from phoenix.healing.actionability_policy import validate_receives_events_strategy
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -209,7 +224,25 @@ class OllamaProvider(BaseProvider):
                 f"blocking_element={strategy.blocking_element!r}, "
                 f"reasoning={strategy.reasoning!r}"
             )
-            return strategy
+            # Deterministic policy guardrail, applied AFTER the debug log
+            # above so that log line always shows exactly what the model
+            # proposed, unmodified — the policy layer's job is to decide
+            # whether that proposal is safe to act on, not to hide what
+            # was actually said. See actionability_policy.py's module
+            # docstring for why this exists (a real finding: the model
+            # correctly identified a blocker as persistent/non-dismissible
+            # in its own reasoning, then proposed wait_and_retry anyway,
+            # deterministically, across a revised prompt with an explicit
+            # self-consistency instruction) and why it validates against
+            # collector_metadata rather than the model's reasoning text.
+            validated = validate_receives_events_strategy(strategy, context)
+            if validated.corrected_by_policy:
+                logger.info(
+                    f"[Ollama] Policy corrected ActionabilityStrategy: "
+                    f"{validated.original_strategy.value} -> {validated.strategy.value} "
+                    f"({validated.policy_reason})"
+                )
+            return validated
 
         raise NotImplementedError(
             f"OllamaProvider has no parser for category={context.category}, "

@@ -61,6 +61,43 @@ class TestActionabilityCollectorReceivesEvents:
         assert context.collector_metadata["blocking_element_computed_style"]["pointerEvents"] == "auto"
         assert "overlay" in context.dom_snapshot
 
+    def test_animation_and_transition_style_pass_through_for_policy_validation(self):
+        # actionability_policy.py's WAIT_AND_RETRY guardrail depends
+        # directly on these two fields existing in collector_metadata —
+        # a regression here would silently make that policy's "positive
+        # evidence" branch permanently unreachable. See
+        # LEARNINGS.md "Sprint 6B — deterministic policy guardrail".
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        page.evaluate.return_value = {
+            "target_outer_html": '<button data-testid="btn-login">Log in</button>',
+            "target_bounding_box": {"x": 10, "y": 20, "width": 100, "height": 40},
+            "blocker_from_dom_probe": {
+                "outer_html": '<div class="toast">Saving...</div>',
+                "bounding_box": {"x": 0, "y": 0, "width": 200, "height": 40},
+                "computed_style": {
+                    "position": "fixed",
+                    "zIndex": "10",
+                    "pointerEvents": "auto",
+                    "opacity": "1",
+                    "display": "block",
+                    "visibility": "visible",
+                    "animationName": "fade-out",
+                    "transitionProperty": "none",
+                },
+            },
+        }
+
+        collector = ActionabilityCollector(page)
+        classified = _receives_events_classified(blocking_element='<div class="toast">Saving...</div>')
+        context = collector.collect(
+            "[data-testid='btn-login']", Exception("timeout"), "click", classified
+        )
+
+        style = context.collector_metadata["blocking_element_computed_style"]
+        assert style["animationName"] == "fade-out"
+        assert style["transitionProperty"] == "none"
+
     def test_two_confirmations_can_be_compared_when_dom_probe_finds_nothing(self):
         # Edge case: the call log named a blocker, but by the time the
         # collector's own probe runs, elementFromPoint() finds the
