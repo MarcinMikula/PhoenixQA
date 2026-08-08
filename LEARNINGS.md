@@ -3974,6 +3974,64 @@ step is, again, the same live scenario — this time genuinely expected
 to show both log lines, since the false-positive that suppressed the
 correction is now fixed at the source.
 
+### [Verification] Guardrail confirmed working live — both log lines present, closing this slice
+
+Re-ran the identical live `RECEIVES_EVENTS` scenario with the fixed
+policy in place.
+
+```
+DEBUG ... [Ollama] Parsed ActionabilityStrategy: strategy=wait_and_retry,
+confidence=0.80, suggested_wait_ms=500, blocking_element=None,
+reasoning='The blocking element is persistent (fixed position with
+high z-index) but has no dismiss affordance; waiting for a short
+period may allow the overlay to disappear or become less obstructive.'
+
+INFO  ... [Ollama] Policy corrected ActionabilityStrategy:
+wait_and_retry -> no_safe_recovery (WAIT_AND_RETRY requires positive
+evidence in collector_metadata that the blocker is transient (an
+active CSS animation or transition). No such evidence was found...)
+```
+
+Both lines present, in the expected order, with the expected content —
+the exact shape predicted before this run, not a surprise. The model's
+own proposal (`wait_and_retry`, confidence 0.80) is logged first,
+completely unmodified — its own hedging language ("may allow... to
+disappear") visible in the raw record for anyone reading the log later.
+The policy then independently corrects it to `no_safe_recovery`, with
+`corrected_by_policy=True` on the object `Healer` would have received
+had anything downstream been listening. `Healer` still rejects the
+result as an unsupported action type regardless (no execution exists),
+so the test still fails with the same original `PlaywrightTimeout` —
+unchanged, expected, and itself still correct.
+
+**This closes the loop this investigation opened several entries ago.**
+Full chain now confirmed working end-to-end, live, not just in mocks:
+overlay blocks a click → `ActionabilityCollector` gathers two
+independent blocker signals plus animation/transition evidence →
+`actionability_prompt.py` asks the model to decide → `llama3.2`
+correctly diagnoses the blocker but proposes an unsafe strategy anyway
+→ `actionability_policy.py` catches this deterministically against
+`collector_metadata`, not the model's prose → `Healer` still declines
+to act on anything in this category → the original Playwright error
+reaches pytest untouched. Every arrow in that chain has now been
+independently live-verified at least once, several of them (temperature/
+seed pinning, prompt revision, the policy itself) verified specifically
+BECAUSE an earlier live run surfaced a real problem a mock could not —
+`2177d2a` through this entry is a fairly complete record of exactly
+that pattern repeating: build a slice, unit-test it, run it for real,
+find what only a real run reveals, fix it, verify the fix live too.
+
+**Where this leaves the two questions still open**, restated precisely
+now that there's real evidence behind both: (1) Option B (`Healer`/
+`BasePage` executing an `ActionabilityStrategy`) remains unbuilt and,
+per the "Scope of the actionability provider slice" decision several
+entries back, deliberately so — nothing in this investigation argued
+FOR building it, several things argued for caution (a small local model
+reliably mis-deciding even when correctly diagnosing); (2) a second
+`ActionabilityReason` (`VISIBLE`/`ENABLED`/`EDITABLE`) is unblocked and
+ready to be picked up as a fresh vertical slice, following the exact
+same discipline this one just demonstrated working.
+
 ---
 
 ## TODO (future sprints)
@@ -4024,7 +4082,8 @@ correction is now fixed at the source.
 - Sprint 6B: DONE — revised prompt re-verified live (3 runs, pinned temperature/seed): diagnosis is now fully correct ("persistent," "no dismiss affordance," precisely matching EXAMPLE 2's teaching), but the model still deterministically chooses `wait_and_retry` despite stating the facts that its own decision tree maps to `no_safe_recovery`. Prompt engineering fixed the diagnosis, not the decision — judged not worth further prompt iteration. See "Live re-runs on the revised prompt" above
 - Sprint 6B: DONE — `actionability_policy.py` built as the architectural response: a deterministic guardrail validating `WAIT_AND_RETRY` against `collector_metadata` (structured DOM facts), not the model's reasoning text. Required first extending `ActionabilityCollector` to capture `animationName`/`transitionProperty` — without them, "positive evidence of transience" was structurally undetectable, a gap found before the validator could even be built correctly. Wired into `OllamaProvider._parse_response()`, with the correction independently logged (`logger.info`) alongside the unmodified raw proposal (existing `logger.debug`). `ActionabilityStrategy` gained `corrected_by_policy`/`original_strategy`/`policy_reason` fields. 113/113 unit suite verified. See "[Decision] LLM proposes, PhoenixQA validates" and "actionability_policy.py — and a gap found before it could even be built" above
 - Sprint 6B: DONE (partial) — first live re-verification with the policy layer caught a real bug in the policy itself: `transition-property`'s CSS default is `"all"`, not `"none"` (unlike `animation-name`, whose default genuinely is `"none"`) — the original `_has_positive_transient_evidence()` compared both against the same constant, making the real browser's default value a false positive on every plain element, invisible to unit tests because every hand-written mock happened to use `"none"` for both fields. Fixed with a per-property constant and a named regression test using the real default. Also separately caught and fixed: the previous commit's `actionability_policy.py` had landed on GitHub as an empty file (editor save/`git add` race), confirmed via `git show origin/main` directly. 113/113 unit suite verified (112 on `origin/main` + 1 regression test). See "Live re-verification catches a real bug in the policy itself" above
-- Sprint 6B, next step (NOT started, again): live re-verification with the FIXED policy layer — confirm `analyze_failure()` now returns `NO_SAFE_RECOVERY` (`corrected_by_policy=True`) for the real overlay, with BOTH the raw-proposal DEBUG line and the "Policy corrected" INFO line visible in the same run. Option B and a second `ActionabilityReason` both remain deliberately on hold. Comparing `llama3.2` against a larger/cloud model (e.g. finishing `AnthropicProvider`, currently a stub) remains a legitimate future research question but explicitly does NOT block or substitute for this policy layer — per direct discussion, "PhoenixQA cannot base execution safety on the assumption that a model will usually apply a rule correctly," regardless of which model
+- Sprint 6B: DONE — guardrail confirmed working live, both log lines present in the expected shape (raw `wait_and_retry` proposal unmodified, then `Policy corrected ActionabilityStrategy: wait_and_retry -> no_safe_recovery`). This closes the `RECEIVES_EVENTS` provider/policy investigation that ran from `2177d2a` through here — every link in the chain (collector → prompt → provider → policy → Healer rejection) is now live-verified, several specifically because an earlier live run surfaced something a mock couldn't. See "Guardrail confirmed working live — both log lines present, closing this slice" above
+- Sprint 6B, genuinely open decision (not started, no default assumed): (A) build Option B execution (`Healer`/`BasePage` acting on a policy-approved `ActionabilityStrategy`) — nothing in this investigation argues FOR this yet, and the small-model mis-decision finding argues for caution specifically here; (B) a second `ActionabilityReason` (`VISIBLE`/`ENABLED`/`EDITABLE` — `STABLE` still blocked on a deterministic Chaos App mechanism), following the same slice discipline just demonstrated working end-to-end. Comparing `llama3.2` against a larger/cloud model (`AnthropicProvider`, currently a stub) remains a legitimate future research question but does not block or substitute for the policy layer already in place, regardless of which option is picked next
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
