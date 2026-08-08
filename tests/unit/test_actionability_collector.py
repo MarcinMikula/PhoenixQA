@@ -83,7 +83,10 @@ class TestActionabilityCollectorReceivesEvents:
                     "display": "block",
                     "visibility": "visible",
                     "animationName": "fade-out",
-                    "transitionProperty": "none",
+                    # transition-property's real CSS default is "all",
+                    # not "none" — see actionability_policy.py's
+                    # regression test for why this distinction matters.
+                    "transitionProperty": "all",
                 },
             },
         }
@@ -96,7 +99,7 @@ class TestActionabilityCollectorReceivesEvents:
 
         style = context.collector_metadata["blocking_element_computed_style"]
         assert style["animationName"] == "fade-out"
-        assert style["transitionProperty"] == "none"
+        assert style["transitionProperty"] == "all"
 
     def test_two_confirmations_can_be_compared_when_dom_probe_finds_nothing(self):
         # Edge case: the call log named a blocker, but by the time the

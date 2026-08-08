@@ -3898,6 +3898,82 @@ time, `analyze_failure()` should return `NO_SAFE_RECOVERY`
 animation/transition evidence in any of the seven live samples gathered
 across this investigation so far.
 
+### [Verification] Live re-verification catches a real bug in the policy itself
+
+Also caught, separately: the previous commit's `actionability_policy.py`
+had reached GitHub with an EMPTY file (0 bytes) — a save/`git add` race
+in the editor, not a content bug. Confirmed via `git show origin/main`
+directly rather than trusting the person's local state, fixed by
+re-uploading the verified working content, confirmed fixed the same
+way (117 lines, both functions present on `origin/main`). Documented
+here briefly since it's part of the same verification session, not
+because it reflects on the policy's own logic.
+
+Ran the live `RECEIVES_EVENTS` scenario with the (correctly landed)
+policy layer in place. Result: `strategy=wait_and_retry` still logged
+by the RAW debug line (expected — the model's own proposal, unchanged),
+but the expected SECOND log line (`"Policy corrected
+ActionabilityStrategy: ..."`) never appeared. The test failed with the
+same original `PlaywrightTimeout`, so nothing was broken end-to-end —
+but the policy had silently NOT corrected a proposal that should have
+been corrected, which is worse than a loud failure: a guardrail that
+looks like it's working but silently isn't.
+
+**Root cause, found by checking the CSS specification directly rather
+than assuming:** `animation-name`'s initial (default) computed-style
+value is `"none"` — but `transition-property`'s initial value is
+`"all"`, NOT `"none"`. The original `_has_positive_transient_evidence()`
+compared BOTH fields against the same constant (`"none"`). A real
+browser's `getComputedStyle()` on a plain, unstyled element — exactly
+what `pointerEventsOverlay.jsx` is — reports `transitionProperty: "all"`
+by default, which the buggy comparison read as "a transition property
+list was explicitly set, therefore positive evidence of transience,"
+when it was actually just the ubiquitous browser default present on
+nearly every element in existence. This made the "positive evidence"
+branch a near-permanent false positive against real browser output,
+even though it worked correctly in every unit test — because every
+mocked test fixture, written by hand, happened to use `"none"` for both
+fields, the one value combination that doesn't trigger the bug.
+
+**This is a case worth naming explicitly, not just fixing quietly:** a
+policy specifically built to stop trusting an LLM's free-text reasoning
+in favor of "hard," "deterministic" DOM evidence still shipped with an
+incorrect assumption about what that hard evidence actually defaults to
+in a real browser — caught only by testing against the real thing, not
+by unit tests against hand-written mocks. The lesson generalizes past
+this one bug: structured, deterministic data is only as trustworthy as
+the assumptions encoded in how it gets interpreted, and those
+assumptions still need real-world verification, same as anything else
+in this pipeline. This is the same category of gap Sprint 2 and Sprint
+4's classifier bugs were (a mismatch between assumed and real behavior
+found only by running the real thing) — recorded as a pattern this file
+has now named at least three times.
+
+**Fixed**: introduced a separate constant per property
+(`_NO_ANIMATION_NAME = "none"`, `_DEFAULT_TRANSITION_PROPERTY = "all"`),
+with `has_transition` now excluding BOTH `"all"` and `"none"` as
+non-evidence. Two things protect this from silently regressing again:
+a new regression test using the real captured default (`transitionProperty:
+"all"`, not the incorrect `"none"` the original mocks used) named
+explicitly for this bug
+(`test_regression_default_transition_property_is_all_not_none`), and the
+existing "no evidence" test fixture itself corrected to use the real
+default rather than the value that happened to hide the bug. The
+collector's own pass-through test
+(`test_animation_and_transition_style_pass_through_for_policy_validation`)
+was also corrected to assert against the realistic `"all"` value rather
+than perpetuate the same wrong assumption elsewhere in the test suite.
+
+**Verified: 113/113 full unit suite passes** (112 on `origin/main` before
+this fix + 1 new regression test = 113, confirmed via a clean worktree
+checkout of `origin/main` rather than assumed from memory). `pyflakes`
+clean.
+
+**Not yet re-verified live with the fix in place.** The next concrete
+step is, again, the same live scenario — this time genuinely expected
+to show both log lines, since the false-positive that suppressed the
+correction is now fixed at the source.
+
 ---
 
 ## TODO (future sprints)
@@ -3947,7 +4023,8 @@ across this investigation so far.
 - Sprint 6B: DONE — `actionability_prompt.py` revised: self-consistency check added, single misleading example (which itself demonstrated `dismiss_blocker` for near-identical styling to the real overlay) replaced with two grounded examples (positive `dismiss_blocker` with a real affordance, corrected `no_safe_recovery` using the actual captured `chaos-pointer-events-overlay` HTML), decision steps restructured to require a SPECIFIC dismiss affordance before `dismiss_blocker` is allowed. New `test_actionability_prompt.py` (8 tests) — the prompt had zero direct test coverage before this. 101/101 unit suite verified. See "actionability_prompt.py revised — the original few-shot example was itself teaching the bug" above
 - Sprint 6B: DONE — revised prompt re-verified live (3 runs, pinned temperature/seed): diagnosis is now fully correct ("persistent," "no dismiss affordance," precisely matching EXAMPLE 2's teaching), but the model still deterministically chooses `wait_and_retry` despite stating the facts that its own decision tree maps to `no_safe_recovery`. Prompt engineering fixed the diagnosis, not the decision — judged not worth further prompt iteration. See "Live re-runs on the revised prompt" above
 - Sprint 6B: DONE — `actionability_policy.py` built as the architectural response: a deterministic guardrail validating `WAIT_AND_RETRY` against `collector_metadata` (structured DOM facts), not the model's reasoning text. Required first extending `ActionabilityCollector` to capture `animationName`/`transitionProperty` — without them, "positive evidence of transience" was structurally undetectable, a gap found before the validator could even be built correctly. Wired into `OllamaProvider._parse_response()`, with the correction independently logged (`logger.info`) alongside the unmodified raw proposal (existing `logger.debug`). `ActionabilityStrategy` gained `corrected_by_policy`/`original_strategy`/`policy_reason` fields. 113/113 unit suite verified. See "[Decision] LLM proposes, PhoenixQA validates" and "actionability_policy.py — and a gap found before it could even be built" above
-- Sprint 6B, next step (NOT started): live re-verification with the policy layer in place — confirm `analyze_failure()` now returns `NO_SAFE_RECOVERY` (`corrected_by_policy=True`) for the real overlay even though the model itself still proposes `wait_and_retry`. Option B and a second `ActionabilityReason` both remain deliberately on hold. Comparing `llama3.2` against a larger/cloud model (e.g. finishing `AnthropicProvider`, currently a stub) remains a legitimate future research question but explicitly does NOT block or substitute for this policy layer — per direct discussion, "PhoenixQA cannot base execution safety on the assumption that a model will usually apply a rule correctly," regardless of which model
+- Sprint 6B: DONE (partial) — first live re-verification with the policy layer caught a real bug in the policy itself: `transition-property`'s CSS default is `"all"`, not `"none"` (unlike `animation-name`, whose default genuinely is `"none"`) — the original `_has_positive_transient_evidence()` compared both against the same constant, making the real browser's default value a false positive on every plain element, invisible to unit tests because every hand-written mock happened to use `"none"` for both fields. Fixed with a per-property constant and a named regression test using the real default. Also separately caught and fixed: the previous commit's `actionability_policy.py` had landed on GitHub as an empty file (editor save/`git add` race), confirmed via `git show origin/main` directly. 113/113 unit suite verified (112 on `origin/main` + 1 regression test). See "Live re-verification catches a real bug in the policy itself" above
+- Sprint 6B, next step (NOT started, again): live re-verification with the FIXED policy layer — confirm `analyze_failure()` now returns `NO_SAFE_RECOVERY` (`corrected_by_policy=True`) for the real overlay, with BOTH the raw-proposal DEBUG line and the "Policy corrected" INFO line visible in the same run. Option B and a second `ActionabilityReason` both remain deliberately on hold. Comparing `llama3.2` against a larger/cloud model (e.g. finishing `AnthropicProvider`, currently a stub) remains a legitimate future research question but explicitly does NOT block or substitute for this policy layer — per direct discussion, "PhoenixQA cannot base execution safety on the assumption that a model will usually apply a rule correctly," regardless of which model
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found

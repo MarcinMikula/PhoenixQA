@@ -53,13 +53,37 @@ class TestWaitAndRetryWithoutEvidence:
 
     def test_corrected_when_computed_style_shows_no_animation_or_transition(self):
         # The real captured pointerEventsOverlay.jsx case: static,
-        # persistent styling with animationName/transitionProperty both
-        # "none" — the browser's own default when nothing is defined.
+        # persistent styling with animationName "none" (its real CSS
+        # default) and transitionProperty "all" (ITS real CSS default —
+        # NOT "none", see the regression test below for why this
+        # distinction matters).
         context = _context(collector_metadata={
             "blocking_element_computed_style": {
                 "position": "fixed", "zIndex": "9999", "pointerEvents": "auto",
                 "opacity": "1", "display": "block", "visibility": "visible",
-                "animationName": "none", "transitionProperty": "none",
+                "animationName": "none", "transitionProperty": "all",
+            }
+        })
+        result = validate_receives_events_strategy(_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+
+    def test_regression_default_transition_property_is_all_not_none(self):
+        # Caught via a real live run (see LEARNINGS.md "Sprint 6B — live
+        # re-verification catches a real bug in the policy itself"): the
+        # first implementation checked transitionProperty against "none",
+        # but transition-property's CSS-spec initial value is "all" —
+        # every plain element in a real browser reports "all", not
+        # "none". That bug made this exact case (no real evidence,
+        # default browser value) silently pass through uncorrected on
+        # live Chaos App traffic, even though every mocked unit test at
+        # the time happened to use "none" for both fields and could not
+        # catch it. This test exists specifically so that mistake cannot
+        # silently return.
+        context = _context(collector_metadata={
+            "blocking_element_computed_style": {
+                "animationName": "none", "transitionProperty": "all",
             }
         })
         result = validate_receives_events_strategy(_wait_and_retry_strategy(), context)

@@ -46,10 +46,21 @@ from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategy
 # blocker is animating / transitioning right now — as opposed to merely
 # being present (position/zIndex/pointerEvents/opacity/display/visibility,
 # which describe WHERE and WHETHER something blocks, not whether it is
-# expected to go away on its own). "none" is the browser's own default
-# for both properties when nothing is defined — anything else is a real,
-# structural signal, not an inference from prose.
-_NO_ANIMATION = "none"
+# expected to go away on its own).
+#
+# The two properties have DIFFERENT CSS-spec default values, confirmed
+# live (see LEARNINGS.md "Sprint 6B — live re-verification catches a
+# real bug in the policy itself"): animation-name's initial value is
+# "none", but transition-property's initial value is "all" — every
+# plain, unstyled element in a real browser reports
+# transitionProperty="all" via getComputedStyle(), NOT "none". The
+# original implementation checked both against the single constant
+# "none", so a real overlay's default "all" was wrongly read as
+# positive evidence of an active transition — a false positive present
+# in every element, that a mocked-value unit test (which happened to
+# use "none" for both fields) could not have caught.
+_NO_ANIMATION_NAME = "none"
+_DEFAULT_TRANSITION_PROPERTY = "all"
 
 
 def validate_receives_events_strategy(
@@ -113,6 +124,9 @@ def _has_positive_transient_evidence(context: HealingContext) -> bool:
     animation_name = computed_style.get("animationName")
     transition_property = computed_style.get("transitionProperty")
 
-    has_animation = bool(animation_name) and animation_name != _NO_ANIMATION
-    has_transition = bool(transition_property) and transition_property != _NO_ANIMATION
+    has_animation = bool(animation_name) and animation_name != _NO_ANIMATION_NAME
+    has_transition = bool(transition_property) and transition_property not in (
+        _DEFAULT_TRANSITION_PROPERTY,
+        "none",
+    )
     return has_animation or has_transition
