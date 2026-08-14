@@ -10,7 +10,7 @@
  * will work on one run and fail on the next — exactly the scenario the
  * Healer (Sprint 4/5) needs to repair.
  *
- * The submit button is also the target for two independent mechanisms:
+ * The submit button is the target for two independent mechanisms:
  * ComponentRemountWrapper (Sprint 6A, DETACHED_FROM_DOM family — dormant,
  * see Gap #4) and PointerEventsOverlay (Sprint 6B, RECEIVES_EVENTS —
  * live). Both wrap the SAME button deliberately, for the same reason
@@ -18,6 +18,14 @@
  * reusing the same login flow across sprints avoids confounding "new
  * failure type" with "new UI scenario" when something doesn't behave as
  * expected on first verification.
+ *
+ * The password input is the target for VisibilityDelayWrapper (Sprint
+ * 6B, ActionabilityReason.VISIBLE) — deliberately a DIFFERENT element
+ * than the button, not because the "reuse the same element" principle
+ * stopped applying, but because the real captured VISIBLE call log
+ * (see tests/unit/test_failure_classifier.py) is from a fill() action,
+ * not click() — this mechanism belongs on an input field to match the
+ * actual failure shape it's simulating.
  */
 import { useMemo, useState } from 'react'
 import { rotateSelector } from '../chaos/selectorRotation'
@@ -27,6 +35,7 @@ import {
   RemountTrigger,
 } from '../chaos/componentRemount'
 import { PointerEventsOverlay } from '../chaos/pointerEventsOverlay'
+import { VisibilityDelayWrapper } from '../chaos/visibilityDelay'
 
 const VALID_USERNAME = 'admin'
 const VALID_PASSWORD = 'secret'
@@ -38,6 +47,8 @@ export function LoginForm({
   componentRemountMaxMs,
   componentRemountTrigger,
   pointerEventsOverlayEnabled = false,
+  visibilityDelayMode = 'off',
+  visibilityDelayMs,
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -94,13 +105,15 @@ export function LoginForm({
         />
 
         <label htmlFor="chaos-password">Password</label>
-        <input
-          id="chaos-password"
-          type="password"
-          data-testid={testIds.password}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <VisibilityDelayWrapper mode={visibilityDelayMode} delayMs={visibilityDelayMs}>
+          <input
+            id="chaos-password"
+            type="password"
+            data-testid={testIds.password}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </VisibilityDelayWrapper>
 
         <PointerEventsOverlay active={pointerEventsOverlayEnabled}>
           <ComponentRemountWrapper

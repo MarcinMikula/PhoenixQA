@@ -27,6 +27,13 @@
  * loss. See LEARNINGS.md "Sprint 6B (implementation) —
  * ActionabilityCollector".
  *
+ * Visibility Delay (Sprint 6B, second ActionabilityReason) is a FOURTH
+ * independent flag — simulates ActionabilityReason.VISIBLE, with two
+ * modes (permanent/transient) rather than a single on/off, since this
+ * is the first mechanism built specifically to test both directions of
+ * the policy guardrail live (ground truth no_safe_recovery vs. ground
+ * truth wait_and_retry). See chaos_app/src/chaos/visibilityDelay.jsx.
+ *
  * TWO CLASSES OF MECHANISM (clarified via Sprint 6A live-verification
  * discussion, see LEARNINGS.md "Sprint 6A — mechanism override"):
  *   - CORE mechanisms (this file's CHAOS_LEVELS ladder): selector_rotation,
@@ -192,6 +199,17 @@ export function getChaosConfigFromEnv() {
   const pointerEventsOverlayEnabled =
     import.meta.env.VITE_POINTER_EVENTS_OVERLAY_ENABLED === 'true'
 
+  // Sprint 6B, second ActionabilityReason — independent flag, same
+  // pattern again, but 'off'/'permanent'/'transient' rather than a
+  // plain boolean, since this mechanism has two modes with different
+  // ground truths (see visibilityDelay.jsx). Defaults to 'off'.
+  const visibilityDelayMode =
+    import.meta.env.VITE_VISIBILITY_DELAY_MODE || 'off'
+
+  const visibilityDelayMs = import.meta.env.VITE_VISIBILITY_DELAY_MS
+    ? parseInt(import.meta.env.VITE_VISIBILITY_DELAY_MS, 10)
+    : undefined
+
   const baseMechanisms = getMechanismsForLevel(level)
   const overrides = readMechanismOverridesFromEnv()
   const mechanisms = applyMechanismOverrides(baseMechanisms, overrides)
@@ -205,5 +223,7 @@ export function getChaosConfigFromEnv() {
     componentRemountMaxMs,
     componentRemountTrigger,
     pointerEventsOverlayEnabled,
+    visibilityDelayMode,
+    visibilityDelayMs,
   }
 }

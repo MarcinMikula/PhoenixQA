@@ -30,23 +30,32 @@ structured, deterministic data gathered by ActionabilityCollector
 directly from the DOM — validating against it means validating against
 the one part of this pipeline that isn't natural language at all.
 
-SCOPE — Sprint 6B: RECEIVES_EVENTS only, ONE rule. Not a general-purpose
-validator for all five ActionabilityReason values, which don't have
-collectors yet (see actionability_collector.py) — designing a general
-rule set before a second reason exists to generalize from would be
-guessing, same "one vertical slice at a time" discipline this project
-has applied throughout Sprint 6.
+SCOPE — originally RECEIVES_EVENTS only, ONE rule (Sprint 6B). Extended
+to VISIBLE (Sprint 6B, second ActionabilityReason) once a second reason
+actually existed to generalize from — deliberately not designed as a
+general-purpose validator for all five ActionabilityReason values ahead
+of that evidence, same "one vertical slice at a time" discipline this
+project has applied throughout Sprint 6. Both reasons share the same
+underlying PRINCIPLE (WAIT_AND_RETRY needs positive evidence before
+being trusted) but deliberately NOT the same evidence STANDARD:
+RECEIVES_EVENTS checks for a declared CSS animation/transition
+capability; VISIBLE checks for an actually OBSERVED state change across
+two real snapshots — a stronger standard adopted specifically for
+VISIBLE, per direct discussion, once its weaker precedent was
+recognized rather than copied forward unexamined. See
+validate_visible_strategy()'s own docstring for the full reasoning,
+including why RECEIVES_EVENTS was NOT retrofitted in the same slice.
 """
 from dataclasses import replace
 
 from phoenix.ai.base_provider import HealingContext
 from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind
 
-# CSS computed-style values that constitute genuine POSITIVE evidence a
-# blocker is animating / transitioning right now — as opposed to merely
-# being present (position/zIndex/pointerEvents/opacity/display/visibility,
-# which describe WHERE and WHETHER something blocks, not whether it is
-# expected to go away on its own).
+# CSS computed-style values that constitute genuine POSITIVE evidence
+# something is animating / transitioning right now — as opposed to
+# merely being present (position/zIndex/pointerEvents/opacity/display/
+# visibility, which describe WHERE and WHETHER something blocks or is
+# hidden, not whether it is expected to change).
 #
 # The two properties have DIFFERENT CSS-spec default values, confirmed
 # live (see LEARNINGS.md "Sprint 6B — live re-verification catches a
@@ -67,22 +76,90 @@ def validate_receives_events_strategy(
     strategy: ActionabilityStrategy, context: HealingContext
 ) -> ActionabilityStrategy:
     """
-    The one rule this module currently enforces: WAIT_AND_RETRY is only
-    allowed when collector_metadata shows positive evidence the blocker
-    is actually animating or transitioning. Without that evidence, a
-    WAIT_AND_RETRY proposal is corrected to NO_SAFE_RECOVERY — not
-    because the model's reasoning was necessarily wrong in every case,
-    but because PhoenixQA has no deterministic basis to trust a "wait"
-    action against a blocker with no structural sign it will change.
+    ActionabilityReason.RECEIVES_EVENTS: WAIT_AND_RETRY is only allowed
+    when collector_metadata's blocking_element_computed_style shows
+    positive evidence the BLOCKING ELEMENT is actually animating or
+    transitioning. Without that evidence, a WAIT_AND_RETRY proposal is
+    corrected to NO_SAFE_RECOVERY — not because the model's reasoning
+    was necessarily wrong in every case, but because PhoenixQA has no
+    deterministic basis to trust a "wait" action against a blocker with
+    no structural sign it will change.
 
     Every other strategy value (DISMISS_BLOCKER, NO_SAFE_RECOVERY,
     SCROLL_INTO_VIEW, FORCE_NOT_ALLOWED) passes through unmodified —
-    this policy has exactly one rule, for exactly one failure mode
-    actually observed in live testing. It does not attempt to validate
-    DISMISS_BLOCKER's blocking_element against the DOM, for example —
-    that would be a real, separate policy to design later if evidence
-    ever shows it's needed, not something to guess at now.
+    this rule covers exactly one failure mode actually observed in live
+    testing. It does not attempt to validate DISMISS_BLOCKER's
+    blocking_element against the DOM, for example — that would be a
+    real, separate rule to design later if evidence ever shows it's
+    needed, not something to guess at now.
+    """
+    return _validate_wait_and_retry(strategy, context, metadata_key="blocking_element_computed_style")
 
+
+def validate_visible_strategy(
+    strategy: ActionabilityStrategy, context: HealingContext
+) -> ActionabilityStrategy:
+    """
+    ActionabilityReason.VISIBLE: same PRINCIPLE as RECEIVES_EVENTS
+    (WAIT_AND_RETRY requires positive evidence), but a DELIBERATELY
+    STRONGER evidence standard — per direct discussion, a genuine
+    correction made during this reason's own slice, not carried over
+    from RECEIVES_EVENTS unchanged.
+
+    RECEIVES_EVENTS' evidence (see validate_receives_events_strategy)
+    checks whether animation/transition is DECLARED in computed style —
+    which is really evidence of CAPABILITY, not of an actual change in
+    progress. A raised, valid concern: `animation-iteration-count:
+    infinite` declares an animation that never resolves anything;
+    `transition-property: opacity` only says opacity WOULD transition IF
+    it changed, not that it currently is. VISIBLE's evidence instead
+    comes from ActionabilityCollector taking two real snapshots of the
+    target's state, separated by a genuine wait, and checking
+    collector_metadata["target_state_changed_during_observation"] — an
+    OBSERVED FACT (did visibility/display/opacity/bounding-box actually
+    change), not a declared capability. See actionability_collector.py's
+    module docstring for the full design and its own honestly-stated
+    simplifications (a single fixed observation window, not adaptive
+    polling).
+
+    Deliberately NOT retrofitted onto RECEIVES_EVENTS in this same
+    slice — one evidence-design change per slice, same discipline this
+    project has applied throughout Sprint 6. RECEIVES_EVENTS' weaker,
+    declaration-based evidence is a known, tracked limitation (see
+    LEARNINGS.md and docs/gaps.md), not a silently accepted gap.
+    """
+    if strategy.strategy != ActionabilityStrategyKind.WAIT_AND_RETRY:
+        return strategy
+
+    metadata = context.collector_metadata or {}
+    state_changed = metadata.get("target_state_changed_during_observation", False)
+
+    if state_changed:
+        return strategy
+
+    return replace(
+        strategy,
+        strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+        corrected_by_policy=True,
+        original_strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+        policy_reason=(
+            "WAIT_AND_RETRY requires the target element's observed state "
+            "(visibility/display/opacity/bounding box) to have actually "
+            f"changed during collection (a {metadata.get('observation_window_ms', '?')}ms "
+            "observation window) — no change was observed, so there is no "
+            "basis to believe waiting longer would help."
+        ),
+    )
+
+
+def _validate_wait_and_retry(
+    strategy: ActionabilityStrategy, context: HealingContext, metadata_key: str
+) -> ActionabilityStrategy:
+    """
+    Shared implementation for validate_receives_events_strategy() above
+    — VISIBLE has its own, stronger evidence check
+    (validate_visible_strategy(), see its docstring for why it does NOT
+    share this implementation).
     Returns a NEW ActionabilityStrategy (dataclasses.replace) rather
     than mutating the argument in place — a caller that already logged
     or captured the original, uncorrected proposal (e.g. OllamaProvider's
@@ -93,7 +170,10 @@ def validate_receives_events_strategy(
     if strategy.strategy != ActionabilityStrategyKind.WAIT_AND_RETRY:
         return strategy
 
-    if _has_positive_transient_evidence(context):
+    metadata = context.collector_metadata or {}
+    computed_style = metadata.get(metadata_key)
+
+    if _has_positive_transient_evidence(computed_style):
         return strategy
 
     return replace(
@@ -103,22 +183,20 @@ def validate_receives_events_strategy(
         original_strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
         policy_reason=(
             "WAIT_AND_RETRY requires positive evidence in collector_metadata "
-            "that the blocker is transient (an active CSS animation or "
-            "transition). No such evidence was found — the blocker's "
-            "computed style showed no animation/transition, or no blocker "
-            "computed style was captured at all."
+            f"['{metadata_key}'] that this is actually transient (an active "
+            "CSS animation or transition). No such evidence was found — the "
+            "computed style showed no animation/transition, or none was "
+            "captured at all."
         ),
     )
 
 
-def _has_positive_transient_evidence(context: HealingContext) -> bool:
-    metadata = context.collector_metadata or {}
-    computed_style = metadata.get("blocking_element_computed_style")
+def _has_positive_transient_evidence(computed_style) -> bool:
     if not isinstance(computed_style, dict):
-        # No DOM-probe confirmation of the blocker at all (see
-        # ActionabilityCollector — this happens when elementFromPoint()
-        # found nothing beyond the target itself). No computed style
-        # means no evidence, not an assumption either way.
+        # No computed style captured at all (e.g. RECEIVES_EVENTS' DOM
+        # probe found nothing beyond the target itself — see
+        # ActionabilityCollector). No computed style means no evidence,
+        # not an assumption either way.
         return False
 
     animation_name = computed_style.get("animationName")

@@ -61,6 +61,16 @@ deterministic check against collector_metadata (not the model's
 reasoning text) that can override an unsafe wait_and_retry proposal.
 The model proposes; this policy validates. See that module's docstring
 for the full reasoning.
+
+Sprint 6B (second ActionabilityReason): ActionabilityReason.VISIBLE
+added alongside RECEIVES_EVENTS, using its own reason-specific prompt
+(phoenix/ai/prompts/visible_prompt.py) and its own policy entry point
+(actionability_policy.validate_visible_strategy) — but the SAME
+response parser (actionability_response_parser.py is reason-agnostic:
+its JSON shape doesn't vary by reason) and the SAME debug-log +
+policy-correction pattern, now factored into
+_run_actionability_policy() so both reasons share it rather than
+duplicating the same three lines of logging twice.
 """
 import logging
 import time
@@ -73,9 +83,14 @@ from phoenix.ai.prompt_templates import SYSTEM_PROMPT as SELECTOR_SYSTEM_PROMPT
 from phoenix.ai.prompt_templates import build_user_prompt as build_selector_user_prompt
 from phoenix.ai.prompts.actionability_prompt import SYSTEM_PROMPT as ACTIONABILITY_SYSTEM_PROMPT
 from phoenix.ai.prompts.actionability_prompt import build_user_prompt as build_actionability_user_prompt
+from phoenix.ai.prompts.visible_prompt import SYSTEM_PROMPT as VISIBLE_SYSTEM_PROMPT
+from phoenix.ai.prompts.visible_prompt import build_user_prompt as build_visible_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
-from phoenix.healing.actionability_policy import validate_receives_events_strategy
+from phoenix.healing.actionability_policy import (
+    validate_receives_events_strategy,
+    validate_visible_strategy,
+)
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -170,16 +185,17 @@ class OllamaProvider(BaseProvider):
         )
 
     def _build_prompt(self, context: HealingContext) -> tuple:
-        """Returns (system_prompt, user_prompt) for context.category —
-        see module docstring for which pair each category maps to."""
+        """Returns (system_prompt, user_prompt) for context.category
+        (and, for ACTIONABILITY, context.actionability_reason) — see
+        module docstring for which pair each maps to."""
         if context.category == FailureCategory.LOCATOR_RESOLUTION:
             return SELECTOR_SYSTEM_PROMPT, build_selector_user_prompt(context)
 
-        if (
-            context.category == FailureCategory.ACTIONABILITY
-            and context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS
-        ):
-            return ACTIONABILITY_SYSTEM_PROMPT, build_actionability_user_prompt(context)
+        if context.category == FailureCategory.ACTIONABILITY:
+            if context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS:
+                return ACTIONABILITY_SYSTEM_PROMPT, build_actionability_user_prompt(context)
+            if context.actionability_reason == ActionabilityReason.VISIBLE:
+                return VISIBLE_SYSTEM_PROMPT, build_visible_user_prompt(context)
 
         raise NotImplementedError(
             f"OllamaProvider has no prompt for category={context.category}, "
@@ -191,63 +207,77 @@ class OllamaProvider(BaseProvider):
     def _parse_response(self, context: HealingContext, raw_content: str):
         """Returns a HealingAction parsed with the same category-specific
         parser _build_prompt() used to build the prompt — kept as one
-        pair per category so the two never drift apart independently."""
+        pair per category/reason so the two never drift apart
+        independently."""
         if context.category == FailureCategory.LOCATOR_RESOLUTION:
             return parse_healing_response(raw_content)
 
-        if (
-            context.category == FailureCategory.ACTIONABILITY
-            and context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS
-        ):
-            strategy = parse_actionability_response(raw_content)
-            # The model's own JSON never states which ActionabilityReason
-            # it was answering for — that's context we already know from
-            # the classifier, not something to re-derive from free-form
-            # model output. Filled in here, not by the parser itself (see
-            # actionability_response_parser.py's docstring on this field).
-            strategy.reason = context.actionability_reason
-            # DEBUG-only visibility into the parsed proposal itself, not
-            # just that a round-trip happened — added specifically to
-            # inspect real model output quality before any decision about
-            # executing an ActionabilityStrategy (see LEARNINGS.md
-            # "Sprint 6B — live ActionabilityStrategy proposal
-            # inspection"). Mirrors the existing symmetric debug logging
-            # for the selector path's HTTP round-trip above — same risk
-            # profile (DEBUG level, opt-in via --log-cli-level=DEBUG,
-            # nothing printed by default), so kept as a permanent log
-            # line rather than temporary throwaway code, not gated behind
-            # a separate env flag.
-            logger.debug(
-                f"[Ollama] Parsed ActionabilityStrategy: strategy={strategy.strategy.value}, "
-                f"confidence={strategy.confidence:.2f}, "
-                f"suggested_wait_ms={strategy.suggested_wait_ms}, "
-                f"blocking_element={strategy.blocking_element!r}, "
-                f"reasoning={strategy.reasoning!r}"
-            )
-            # Deterministic policy guardrail, applied AFTER the debug log
-            # above so that log line always shows exactly what the model
-            # proposed, unmodified — the policy layer's job is to decide
-            # whether that proposal is safe to act on, not to hide what
-            # was actually said. See actionability_policy.py's module
-            # docstring for why this exists (a real finding: the model
-            # correctly identified a blocker as persistent/non-dismissible
-            # in its own reasoning, then proposed wait_and_retry anyway,
-            # deterministically, across a revised prompt with an explicit
-            # self-consistency instruction) and why it validates against
-            # collector_metadata rather than the model's reasoning text.
-            validated = validate_receives_events_strategy(strategy, context)
-            if validated.corrected_by_policy:
-                logger.info(
-                    f"[Ollama] Policy corrected ActionabilityStrategy: "
-                    f"{validated.original_strategy.value} -> {validated.strategy.value} "
-                    f"({validated.policy_reason})"
+        if context.category == FailureCategory.ACTIONABILITY:
+            if context.actionability_reason == ActionabilityReason.RECEIVES_EVENTS:
+                return self._run_actionability_policy(
+                    context, raw_content, validate_receives_events_strategy
                 )
-            return validated
+            if context.actionability_reason == ActionabilityReason.VISIBLE:
+                return self._run_actionability_policy(
+                    context, raw_content, validate_visible_strategy
+                )
 
         raise NotImplementedError(
             f"OllamaProvider has no parser for category={context.category}, "
             f"actionability_reason={context.actionability_reason}."
         )
+
+    def _run_actionability_policy(self, context: HealingContext, raw_content: str, policy_fn):
+        """
+        Shared by every ActionabilityReason with a real parser/policy
+        pair (currently RECEIVES_EVENTS and VISIBLE — Sprint 6B). The
+        response shape is reason-agnostic (parse_actionability_response()
+        doesn't branch on reason at all), so only the POLICY function
+        differs per reason — passed in explicitly by the caller rather
+        than looked up by a dict keyed on reason, keeping each reason's
+        wiring visible at its own call site in _parse_response() above.
+
+        DEBUG-only visibility into the parsed proposal itself, not just
+        that a round-trip happened — added specifically to inspect real
+        model output quality before any decision about executing an
+        ActionabilityStrategy (see LEARNINGS.md "Sprint 6B — live
+        ActionabilityStrategy proposal inspection"). Mirrors the
+        existing symmetric debug logging for the selector path's HTTP
+        round-trip — same risk profile (DEBUG level, opt-in via
+        --log-cli-level=DEBUG, nothing printed by default).
+
+        The policy guardrail runs AFTER that debug log, not before, so
+        the log line always shows exactly what the model proposed,
+        unmodified — the policy layer's job is to decide whether that
+        proposal is safe to act on, not to hide what was actually said.
+        See actionability_policy.py's module docstring for why this
+        exists and why it validates against collector_metadata rather
+        than the model's reasoning text.
+        """
+        strategy = parse_actionability_response(raw_content)
+        # The model's own JSON never states which ActionabilityReason it
+        # was answering for — that's context we already know from the
+        # classifier, not something to re-derive from free-form model
+        # output. Filled in here, not by the parser itself (see
+        # actionability_response_parser.py's docstring on this field).
+        strategy.reason = context.actionability_reason
+
+        logger.debug(
+            f"[Ollama] Parsed ActionabilityStrategy: strategy={strategy.strategy.value}, "
+            f"confidence={strategy.confidence:.2f}, "
+            f"suggested_wait_ms={strategy.suggested_wait_ms}, "
+            f"blocking_element={strategy.blocking_element!r}, "
+            f"reasoning={strategy.reasoning!r}"
+        )
+
+        validated = policy_fn(strategy, context)
+        if validated.corrected_by_policy:
+            logger.info(
+                f"[Ollama] Policy corrected ActionabilityStrategy: "
+                f"{validated.original_strategy.value} -> {validated.strategy.value} "
+                f"({validated.policy_reason})"
+            )
+        return validated
 
     def health_check(self) -> bool:
         """

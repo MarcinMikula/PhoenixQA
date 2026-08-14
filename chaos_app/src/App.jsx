@@ -39,6 +39,10 @@ function App() {
           <li>
             Pointer Events Overlay (Sprint 6B, RECEIVES_EVENTS): {config.pointerEventsOverlayEnabled ? 'enabled' : 'disabled'}
           </li>
+          <li>
+            Visibility Delay (Sprint 6B, VISIBLE): {config.visibilityDelayMode}
+            {config.visibilityDelayMode === 'transient' ? ` (${config.visibilityDelayMs ?? 1000}ms)` : ''}
+          </li>
         </ul>
       </div>
 
@@ -50,6 +54,8 @@ function App() {
           componentRemountMaxMs={config.componentRemountMaxMs}
           componentRemountTrigger={config.componentRemountTrigger}
           pointerEventsOverlayEnabled={config.pointerEventsOverlayEnabled}
+          visibilityDelayMode={config.visibilityDelayMode}
+          visibilityDelayMs={config.visibilityDelayMs}
         />
         <TicketList
           activeMechanisms={config.mechanisms}

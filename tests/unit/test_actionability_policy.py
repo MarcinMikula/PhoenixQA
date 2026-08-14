@@ -1,15 +1,19 @@
 """
 test_actionability_policy.py
 
-Unit tests for validate_receives_events_strategy(). Pure logic, no
-Playwright/Ollama needed — validates HealingContext.collector_metadata
-dicts directly.
+Unit tests for validate_receives_events_strategy() and
+validate_visible_strategy() (Sprint 6B, second ActionabilityReason).
+Pure logic, no Playwright/Ollama needed — validates
+HealingContext.collector_metadata dicts directly.
 """
 import pytest
 
 from phoenix.ai.base_provider import HealingContext
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
-from phoenix.healing.actionability_policy import validate_receives_events_strategy
+from phoenix.healing.actionability_policy import (
+    validate_receives_events_strategy,
+    validate_visible_strategy,
+)
 from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind
 
 
@@ -167,5 +171,97 @@ class TestNonWaitAndRetryStrategiesPassThroughUnmodified:
         result = validate_receives_events_strategy(strategy, context)
 
         assert result.strategy == kind
+        assert result.corrected_by_policy is False
+        assert result is strategy
+
+
+def _visible_wait_and_retry_strategy(confidence=0.80):
+    return ActionabilityStrategy(
+        confidence=confidence,
+        reasoning="The element's visibility actually changed between t0 and t1.",
+        raw_response="{...}",
+        reason=ActionabilityReason.VISIBLE,
+        strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+        suggested_wait_ms=1200,
+    )
+
+
+@pytest.mark.unit
+class TestValidateVisibleStrategy:
+    # Sprint 6B, second ActionabilityReason: a DELIBERATELY STRONGER
+    # evidence standard than RECEIVES_EVENTS — a real, observed state
+    # change (collector_metadata["target_state_changed_during_observation"]),
+    # not a declared CSS animation/transition capability. See
+    # validate_visible_strategy()'s own docstring for why this reason
+    # does not share RECEIVES_EVENTS' weaker, declaration-based check.
+
+    def test_corrected_to_no_safe_recovery_when_no_state_change_was_observed(self):
+        # The real Chaos App PERMANENT-mode shape: identical state at
+        # t0 and t1.
+        context = _context(collector_metadata={
+            "target_state_changed_during_observation": False,
+            "observation_window_ms": 1200,
+        })
+        result = validate_visible_strategy(_visible_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+        assert result.original_strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
+        assert "observed state" in result.policy_reason
+
+    def test_corrected_to_no_safe_recovery_when_evidence_key_missing_entirely(self):
+        # No key at all (e.g. a HealingContext built without ever
+        # running collection) must default to "no evidence", not crash
+        # or silently pass through.
+        context = _context(collector_metadata={})
+        result = validate_visible_strategy(_visible_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+
+    def test_passes_through_when_a_real_state_change_was_observed(self):
+        # The first live-testable case of the guardrail's OTHER
+        # direction: real positive evidence must actually be allowed
+        # through, not just correctly blocked when absent. The real
+        # Chaos App TRANSIENT-mode shape.
+        context = _context(collector_metadata={
+            "target_state_changed_during_observation": True,
+            "observation_window_ms": 1200,
+        })
+        result = validate_visible_strategy(_visible_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
+        assert result.corrected_by_policy is False
+
+    def test_declared_css_animation_alone_is_not_sufficient_evidence(self):
+        # The exact design correction this reason exists to make: a
+        # blocking_element_computed_style-shaped dict with animation
+        # evidence must NOT satisfy validate_visible_strategy() — it
+        # doesn't even look at that key, and even if it did, VISIBLE's
+        # standard is an observed change, not a CSS declaration.
+        context = _context(collector_metadata={
+            "blocking_element_computed_style": {
+                "animationName": "fade-out", "transitionProperty": "all",
+            },
+            "target_state_changed_during_observation": False,
+        })
+        result = validate_visible_strategy(_visible_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+
+    def test_no_safe_recovery_passes_through_unmodified(self):
+        strategy = ActionabilityStrategy(
+            confidence=0.75,
+            reasoning="No observed change.",
+            raw_response="{...}",
+            reason=ActionabilityReason.VISIBLE,
+            strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+        )
+        context = _context(collector_metadata={})
+
+        result = validate_visible_strategy(strategy, context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
         assert result.corrected_by_policy is False
         assert result is strategy

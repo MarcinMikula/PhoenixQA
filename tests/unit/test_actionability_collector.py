@@ -1,10 +1,11 @@
 """
 test_actionability_collector.py
 
-Unit tests for ActionabilityCollector — RECEIVES_EVENTS context
-gathering (mocked page.evaluate(), no live browser needed) and the
-NotImplementedError guard for the four not-yet-built reasons. See
-LEARNINGS.md "Sprint 6B (implementation) — ActionabilityCollector".
+Unit tests for ActionabilityCollector — RECEIVES_EVENTS and VISIBLE
+context gathering (mocked page.evaluate(), no live browser needed) and
+the NotImplementedError guard for the three not-yet-built reasons. See
+LEARNINGS.md "Sprint 6B (implementation) — ActionabilityCollector" and
+"Sprint 6B — second ActionabilityReason".
 """
 from unittest.mock import MagicMock
 
@@ -127,11 +128,134 @@ class TestActionabilityCollectorReceivesEvents:
 
 
 @pytest.mark.unit
+class TestActionabilityCollectorVisible:
+    def test_gathers_target_context_with_no_state_change(self):
+        # The PERMANENT-mode shape: identical state at t0 and t1 — no
+        # observed change, so no evidence of transience. Ground truth:
+        # no_safe_recovery.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot = {
+            "target_outer_html": '<input data-testid="password-x7f2" type="password">',
+            "visibility": "hidden", "display": "block", "opacity": "1",
+            "bounding_box": {"x": 10, "y": 60, "width": 200, "height": 30},
+        }
+        page.evaluate.side_effect = [snapshot, dict(snapshot)]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="Locator.fill: ... element is not visible",
+        )
+        context = collector.collect(
+            "[data-testid='password-x7f2']", Exception("timeout"), "fill", classified
+        )
+
+        assert context.category == FailureCategory.ACTIONABILITY
+        assert context.actionability_reason == ActionabilityReason.VISIBLE
+        assert context.collector_metadata["target_outer_html"].startswith("<input")
+        assert context.collector_metadata["target_state_changed_during_observation"] is False
+        assert "not visible" in context.dom_snapshot
+        # A real wall-clock wait must actually happen between the two
+        # snapshots — this IS the mechanism that makes the evidence
+        # temporal rather than declarative.
+        page.wait_for_timeout.assert_called_once()
+
+    def test_gathers_target_context_with_a_real_state_change(self):
+        # The TRANSIENT-mode shape: visibility genuinely flips between
+        # t0 and t1 — real, observed evidence. Ground truth:
+        # wait_and_retry.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot_t0 = {
+            "target_outer_html": '<input data-testid="password-x7f2" type="password">',
+            "visibility": "hidden", "display": "block", "opacity": "1",
+            "bounding_box": {"x": 10, "y": 60, "width": 200, "height": 30},
+        }
+        snapshot_t1 = {**snapshot_t0, "visibility": "visible"}
+        page.evaluate.side_effect = [snapshot_t0, snapshot_t1]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="Locator.fill: ... element is not visible",
+        )
+        context = collector.collect(
+            "[data-testid='password-x7f2']", Exception("timeout"), "fill", classified
+        )
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is True
+        assert context.collector_metadata["target_state_t0"]["visibility"] == "hidden"
+        assert context.collector_metadata["target_state_t1"]["visibility"] == "visible"
+
+    def test_bounding_box_size_change_alone_counts_as_a_state_change(self):
+        # An expanding accordion/section might never flip
+        # visibility/display/opacity at all, only its rendered size —
+        # that must still count as observed evidence of change.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot_t0 = {
+            "target_outer_html": "<div>", "visibility": "visible",
+            "display": "block", "opacity": "1",
+            "bounding_box": {"x": 0, "y": 0, "width": 100, "height": 0},
+        }
+        snapshot_t1 = {
+            **snapshot_t0,
+            "bounding_box": {"x": 0, "y": 0, "width": 100, "height": 40},
+        }
+        page.evaluate.side_effect = [snapshot_t0, snapshot_t1]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "fill", classified)
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is True
+
+    def test_no_dom_probe_or_blocker_fields_for_visible(self):
+        # VISIBLE has no separate blocker concept — confirms the
+        # collector doesn't invent blocking_element_* keys for a reason
+        # that has no such thing, which would be misleading to a future
+        # prompt reading collector_metadata.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot = {
+            "target_outer_html": "<input>", "visibility": "hidden",
+            "display": "block", "opacity": "1",
+            "bounding_box": {"x": 0, "y": 0, "width": 10, "height": 10},
+        }
+        page.evaluate.side_effect = [snapshot, dict(snapshot)]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "fill", classified)
+
+        assert "blocking_element_outer_html" not in context.collector_metadata
+        assert "blocking_element_from_call_log" not in context.collector_metadata
+
+
+@pytest.mark.unit
 class TestActionabilityCollectorUnimplementedReasons:
     @pytest.mark.parametrize(
         "reason",
         [
-            ActionabilityReason.VISIBLE,
             ActionabilityReason.ENABLED,
             ActionabilityReason.EDITABLE,
             ActionabilityReason.STABLE,
