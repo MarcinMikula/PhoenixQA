@@ -4207,6 +4207,124 @@ generalization test this slice exists to run) is the necessary next
 step before this slice can be considered closed the way `RECEIVES_EVENTS`
 was.
 
+### [Verification] `VISIBLE`/PERMANENT confirmed live — model correctly self-selects `no_safe_recovery`, no correction needed
+
+Ran the live scenario (`VITE_CHAOS_LEVEL=LOW`, `VITE_OVERRIDE_SELECTOR_ROTATION=false`,
+`VITE_VISIBILITY_DELAY_MODE=permanent`, `pointerEventsOverlay` OFF) —
+`fill()` on the password field.
+
+```
+strategy=no_safe_recovery, confidence=0.80, suggested_wait_ms=None
+reasoning="The element's visibility did not change between t0 and t1,
+indicating no real action is being taken to make it visible."
+```
+
+**Notably different from every `RECEIVES_EVENTS` sample gathered
+earlier**: the model reached the correct, policy-compliant answer ON
+ITS OWN — no `Policy corrected` log line, because none was needed. The
+reasoning explicitly names the temporal evidence
+(`"did not change between t0 and t1"`) in the exact vocabulary
+`visible_prompt.py` was written to teach, not a vague restatement.
+`GET /api/tags` → `POST /api/generate` round-trip confirmed (252 chars,
+19453ms). `base_page.py:99: raise e` confirms the original
+`PlaywrightTimeout` reached pytest unchanged — first live confirmation
+of the `Healing*Error` → original-error path specifically for `fill()`,
+not just `click()`.
+
+### [Verification] A wrong first attempt at TRANSIENT reveals a real architectural fact, not a bug
+
+First attempt (`VITE_VISIBILITY_DELAY_MS` left at the default 1000ms,
+`pointerEventsOverlay` accidentally still `true` from an earlier
+session) produced a passing-looking but WRONG result: the traceback
+failed on `click(BTN_SUBMIT)` with `intercepts pointer events` — the
+already-verified `RECEIVES_EVENTS` path firing, not `VISIBLE` at all.
+
+**Root cause, worked out from the evidence rather than guessed:**
+Playwright's own `fill()` has a built-in actionability retry loop
+(default 30000ms) that runs BEFORE ever raising an exception. With
+`VITE_VISIBILITY_DELAY_MS=1000`, the password field became visible well
+within that 30-second window — Playwright's own polling silently
+succeeded and filled it. `PhoenixQA`'s `Healer` was never invoked for
+`VISIBLE` at all, because there was no failure to heal. The test then
+proceeded to `click(BTN_SUBMIT)`, where the still-enabled
+`pointerEventsOverlay` produced a real, but unrelated,
+`RECEIVES_EVENTS` failure — an already-fully-verified path from the
+previous slice, not a new result.
+
+**This is a genuine architectural fact worth naming, not an edge case
+to special-case away**: PhoenixQA's healing pipeline can only ever be
+invoked AFTER Playwright's own built-in retry has been fully exhausted.
+A `TRANSIENT`-shaped real-world failure that resolves faster than
+Playwright's own action timeout will NEVER reach `Healer` — and
+arguably shouldn't, since Playwright already recovered on its own with
+no help needed. The practical consequence for Chaos App specifically:
+`visibilityDelay.jsx`'s default `delayMs` (1000ms) does not, by itself,
+exercise the `VISIBLE` healing path for a `fill()` target at all — the
+delay has to exceed Playwright's own timeout for `Healer` to ever be
+invoked. This mirrors a lesson already learned once before, from a
+different angle: Sprint 6A's own note that `VITE_VISIBILITY_DELAY_MS`
+(there, for a different mechanism) "must exceed Playwright's internal
+30-second retry window" for `Healer` to be invoked at all — now
+independently rediscovered here, confirming it as a general property of
+this architecture, not a one-off quirk of one mechanism.
+
+### [Verification] `VISIBLE`/TRANSIENT confirmed live — the guardrail's ALLOW direction, working correctly for the first time
+
+Corrected configuration: `pointerEventsOverlay` OFF,
+`VITE_VISIBILITY_DELAY_MS=30500` — chosen deliberately to land the
+actual reveal just after Playwright's 30000ms `fill()` timeout expires,
+so `Healer` is guaranteed to be invoked, and within
+`ActionabilityCollector`'s `_VISIBLE_OBSERVATION_WINDOW_MS` (1200ms)
+of that expiry, so the collector's second snapshot has a real chance of
+catching the change.
+
+```
+strategy=wait_and_retry, confidence=0.80, suggested_wait_ms=1200
+reasoning="The element's visibility changed from hidden to visible
+between t0 and t1, confirming it is becoming actionable."
+```
+
+**No `Policy corrected` log line — and for the first time in this
+entire investigation, that absence is itself the confirmed-correct
+result being tested for**, not merely the default case. Every previous
+live sample across both `ActionabilityReason` values had tested the
+guardrail's BLOCK direction (no evidence → correctly denied); this is
+the first live confirmation of the ALLOW direction (real evidence →
+correctly permitted). The model's `reasoning` names the exact observed
+change (`"hidden to visible between t0 and t1"`) `visible_prompt.py`'s
+positive example was written to elicit, and its `suggested_wait_ms`
+(1200) matches the collector's own observation window exactly — a
+plausible sign the model is reading the window duration directly out
+of the prompt rather than guessing, worth treating as a genuinely good
+sign, not over-interpreting from n=1.
+
+**Combined result for this slice, both modes now on record:**
+
+| Mode | Evidence (t0→t1) | Model's own strategy | Policy action | Matches ground truth |
+|---|---|---|---|---|
+| `permanent` | no change | `no_safe_recovery` (self-selected) | pass through | ✅ |
+| `transient` | `hidden`→`visible` | `wait_and_retry` (self-selected) | pass through | ✅ |
+
+Both ground-truth shapes reached the correct final answer WITHOUT the
+policy needing to intervene — a materially different outcome from
+`RECEIVES_EVENTS`, where the guardrail had to actively correct the
+model's proposal in every sample gathered. Tentative, explicitly
+n=1-per-mode: temporal, observed evidence may be an easier signal for
+`llama3.2` to apply correctly than a CSS declaration was — consistent
+with, but not proof of, the `RH-7`-relevant hypothesis that the model's
+FAILURE MODE on `RECEIVES_EVENTS` was specifically about connecting a
+declared-capability fact to a decision, not about reasoning under
+temporal evidence in general. Worth more samples before treating this
+as settled — recorded as an observation, not a conclusion, per this
+project's own "n=3+ before drawing conclusions" habit (not yet met
+here).
+
+**This closes the `VISIBLE` slice's live verification.** Both directions
+of `actionability_policy.py`'s guardrail are now confirmed working
+against real infrastructure, on two independent `ActionabilityReason`
+values, using two different evidence designs (CSS-declaration-based for
+`RECEIVES_EVENTS`, temporal-observation-based for `VISIBLE`).
+
 ---
 
 ## TODO (future sprints)
@@ -4258,8 +4376,10 @@ was.
 - Sprint 6B: DONE — `actionability_policy.py` built as the architectural response: a deterministic guardrail validating `WAIT_AND_RETRY` against `collector_metadata` (structured DOM facts), not the model's reasoning text. Required first extending `ActionabilityCollector` to capture `animationName`/`transitionProperty` — without them, "positive evidence of transience" was structurally undetectable, a gap found before the validator could even be built correctly. Wired into `OllamaProvider._parse_response()`, with the correction independently logged (`logger.info`) alongside the unmodified raw proposal (existing `logger.debug`). `ActionabilityStrategy` gained `corrected_by_policy`/`original_strategy`/`policy_reason` fields. 113/113 unit suite verified. See "[Decision] LLM proposes, PhoenixQA validates" and "actionability_policy.py — and a gap found before it could even be built" above
 - Sprint 6B: DONE (partial) — first live re-verification with the policy layer caught a real bug in the policy itself: `transition-property`'s CSS default is `"all"`, not `"none"` (unlike `animation-name`, whose default genuinely is `"none"`) — the original `_has_positive_transient_evidence()` compared both against the same constant, making the real browser's default value a false positive on every plain element, invisible to unit tests because every hand-written mock happened to use `"none"` for both fields. Fixed with a per-property constant and a named regression test using the real default. Also separately caught and fixed: the previous commit's `actionability_policy.py` had landed on GitHub as an empty file (editor save/`git add` race), confirmed via `git show origin/main` directly. 113/113 unit suite verified (112 on `origin/main` + 1 regression test). See "Live re-verification catches a real bug in the policy itself" above
 - Sprint 6B: DONE — guardrail confirmed working live, both log lines present in the expected shape (raw `wait_and_retry` proposal unmodified, then `Policy corrected ActionabilityStrategy: wait_and_retry -> no_safe_recovery`). This closes the `RECEIVES_EVENTS` provider/policy investigation that ran from `2177d2a` through here — every link in the chain (collector → prompt → provider → policy → Healer rejection) is now live-verified, several specifically because an earlier live run surfaced something a mock couldn't. See "Guardrail confirmed working live — both log lines present, closing this slice" above
-- Sprint 6B: DONE (partial) — second `ActionabilityReason` (`VISIBLE`) implemented: `visibilityDelay.jsx` (PERMANENT+TRANSIENT modes), `ActionabilityCollector` extended with temporal (not declarative) evidence gathering, `visible_prompt.py`, `validate_visible_strategy()`. 134/134 unit suite verified, `npm run build` clean. **Not yet live-verified against real Chaos App + Ollama at all** — sandbox tooling couldn't sustain a background dev server across tool calls even for a browser-only smoke test. See "Sprint 6B — second ActionabilityReason: VISIBLE" above
-- Sprint 6B, next step (NOT started): live verification of the `VISIBLE` slice, both modes — (1) `VITE_VISIBILITY_DELAY_MODE=permanent`: confirm the pipeline reaches `ActionabilityCollector` → `visible_prompt.py` → provider → `validate_visible_strategy()` and correctly lands on `NO_SAFE_RECOVERY` (whether the model itself proposes it or `wait_and_retry` gets corrected), (2) `VITE_VISIBILITY_DELAY_MODE=transient`: confirm the SAME pipeline, with a real observed state change, either lets a `wait_and_retry` proposal through uncorrected OR shows the model correctly proposing it directly — this is the first live test of the policy guardrail's ALLOW direction, not just its BLOCK direction. Use `pytest tests/chaos/test_chaos_login.py::TestChaosLogin::test_successful_login -m chaos -v --log-cli-level=DEBUG` against the password field flow (the mechanism now wraps `password`, not the login button)
+- Sprint 6B: DONE — second `ActionabilityReason` (`VISIBLE`) fully implemented AND live-verified, both modes, on the first correctly-configured attempt each. `permanent`: model self-selects `no_safe_recovery` (no correction needed). `transient` (`VITE_VISIBILITY_DELAY_MS=30500`, timed to land just after Playwright's own 30s `fill()` timeout): model self-selects `wait_and_retry` with `suggested_wait_ms` matching the collector's own observation window exactly. First live confirmation of `actionability_policy.py`'s ALLOW direction, not just its BLOCK direction. See "VISIBLE/PERMANENT confirmed live" and "VISIBLE/TRANSIENT confirmed live" above
+- Architectural fact confirmed live, not a bug (see "A wrong first attempt at TRANSIENT reveals a real architectural fact"): `Healer` can only ever be invoked AFTER Playwright's own built-in action retry (default 30000ms for `fill()`/10000ms for `click()`) is fully exhausted. A chaos mechanism whose delay is shorter than Playwright's own timeout never reaches `Healer` at all — Playwright silently self-heals first. Independently rediscovers a note already made once before in Sprint 6A for a different mechanism — now confirmed as a general property of this architecture, not a one-off. Worth keeping in mind when designing any future timing-based Chaos App mechanism or `ActionabilityReason` slice
+- Documentation synchronization pass, per direct discussion, now that `VISIBLE` is closed and no longer blocking it: `README.md`, `docs/known-limitations.md`, and `docs/research_hypotheses.md` (RH-2, RH-7) all still describe a pre-Sprint-6B state (old `FailureType`, single-class `ContextCollector`, `HealingProposal`, `classify_playwright_error()` "misclassifying" actionability failures) that no longer matches the code or this file. Also flagged in the same review: `README.md` overstates `AnthropicProvider` as a live, switchable option when both its methods still raise `NotImplementedError`; `docs/gaps.md` Gap #1 (what does "correct heal" mean) remains genuinely unresolved and increasingly relevant as more `ActionabilityReason` slices accumulate. This is the next piece of work, not `ENABLED`/`EDITABLE` or Option B
+- Future work, explicitly tracked (per direct discussion, not silently dropped): (a) retrofit `RECEIVES_EVENTS`' evidence check from CSS-declaration-based to the same temporal-observation standard now used for `VISIBLE`, once there's a concrete reason to justify the churn (not "for consistency" alone); (b) replace `VISIBLE`'s single fixed observation window with adaptive polling (sample at intervals up to a ceiling, stop early on a detected change) — the fuller version of "observe, don't declare" that a single window only approximates
 - Future work, explicitly tracked (per direct discussion, not silently dropped): (a) retrofit `RECEIVES_EVENTS`' evidence check from CSS-declaration-based to the same temporal-observation standard now used for `VISIBLE`, once there's a concrete reason to justify the churn (not "for consistency" alone); (b) replace `VISIBLE`'s single fixed observation window with adaptive polling (sample at intervals up to a ceiling, stop early on a detected change) — the fuller version of "observe, don't declare" that a single window only approximates; (c) documentation synchronization pass flagged in direct discussion: `README.md`, `docs/known-limitations.md`, and `docs/research_hypotheses.md` (RH-2, RH-7) all still describe a pre-Sprint-6B state (`FailureType`, single-class `ContextCollector`, `HealingProposal`, `classify_playwright_error()` "misclassifying" actionability failures) that no longer matches the code or this file — explicitly deferred until after the `VISIBLE` slice closes, per direct agreement, not forgotten
 - Sprint 6B, genuinely open decision (still not started, no default assumed, unaffected by the `VISIBLE` work above): (A) build Option B execution (`Healer`/`BasePage` acting on a policy-approved `ActionabilityStrategy`); (B) a third `ActionabilityReason` (`ENABLED`/`EDITABLE` — `STABLE` still blocked on a deterministic Chaos App mechanism). Comparing `llama3.2` against a larger/cloud model (`AnthropicProvider`, currently a stub) remains a legitimate future research question but does not block or substitute for the policy layer already in place
 - Future cleanup, explicitly deferred, not forgotten: migrate `phoenix/ai/prompt_templates.py` → `phoenix/ai/prompts/selector_prompt.py` for consistency with the new `prompts/` package, once it's not competing with an unrelated feature commit's diff
