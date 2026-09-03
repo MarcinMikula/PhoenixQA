@@ -14,41 +14,38 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   Whether read-only assertions should be healable — and what "healing"
   even means for a boolean-returning check — is an open design question,
   not yet decided.
-- **Only `FailureType.SELECTOR_NOT_FOUND` has a real collection strategy.**
-  `DETACHED_FROM_DOM`, `NOT_VISIBLE`, `TIMEOUT_WAITING` raise
-  `NotImplementedError` by design. The original Sprint 2 assumption that
-  `DETACHED_FROM_DOM` would be the most common of the three (from direct
-  Selenium/Salesforce Lightning experience) was empirically tested in
-  Sprint 6A and did not hold for a `Locator`-based framework — see
+- **Only 2 of 5 `ActionabilityReason` values have a real collection
+  strategy.** `RECEIVES_EVENTS` and `VISIBLE` are implemented, unit-tested,
+  and live-verified (both against real Chaos App mechanisms —
+  `pointerEventsOverlay.jsx` and `visibilityDelay.jsx` — and both
+  directions of `actionability_policy.py`'s guardrail). `ENABLED`/
+  `EDITABLE` are not started. `STABLE` is blocked — no deterministic
+  Chaos App mechanism exists to test it against, same non-determinism
+  problem already deprioritized for `DETACHED_FROM_DOM` in Sprint 6A.
+  The dormant `FailureCategory.REFERENCE` (successor to
+  `DETACHED_FROM_DOM`) has no active collector or plan — see
   `LEARNINGS.md` "Sprint 6A conclusion" and `docs/gaps.md` Gap #4.
-  `classify_playwright_error()` DOES correctly recognize `DETACHED_FROM_DOM`
-  (verified live), but `ContextCollector` still raises `NotImplementedError`
-  for it, and building the collector is no longer the planned next step.
-  Sprint 6B diagnostics (see below) further found that a flat choice
-  between `NOT_VISIBLE`/`TIMEOUT_WAITING` isn't the right next move
-  either — the exact shape of the next collection strategy is an open
-  decision, not just a pick between the two existing enum members.
-- **`classify_playwright_error()` currently misclassifies actionability
-  failures as `SELECTOR_NOT_FOUND` — confirmed live, not just suspected,
-  and a fix is decided but not yet implemented.** A `click()`/`fill()`
-  timeout on an element that resolves but fails an actionability check
-  (not visible, disabled, readonly, animating, covered by an overlay)
-  produces a message containing `"waiting for locator"`, the same
-  substring the classifier checks for `SELECTOR_NOT_FOUND` — so it's
-  routed into the selector-healing pipeline even though the selector is
-  completely correct and nothing about it needs replacing. Confirmed via
-  real `healing_decisions.log` entries plus six throwaway diagnostic
-  tests covering all five Playwright actionability reasons
-  (`visible`/`enabled`/`editable`/`stable`/`receives events`).
-  `async_delay`'s current implementation (conditional DOM mounting, not
-  CSS-based hiding) happens to produce the exact same message shape as
-  genuine `SELECTOR_NOT_FOUND` — meaning it cannot currently be used to
-  exercise a true "resolved but not actionable" case at all; a future
-  chaos mechanism aimed at that case would need to render the element
-  immediately and toggle a CSS/attribute property instead. The fix is a
-  decided replacement — `parse_playwright_call_log() -> ClassifiedFailure`
-  with `FailureCategory`/`ActionabilityReason` — not yet written in code.
-  See `LEARNINGS.md` "Sprint 6B (decision)" and `docs/gaps.md` Gap #5.
+- **Even where an `ActionabilityStrategy` is correctly proposed and
+  validated, `Healer` never executes it.** `Healer` explicitly rejects
+  any action that isn't a `SelectorReplacement` (see `healer.py`,
+  `phoenix/healing/actions.py`) — for `RECEIVES_EVENTS`/`VISIBLE` this
+  means the full pipeline (collect → prompt → parse → policy-correct)
+  runs for real, produces a real, guardrail-validated proposal, and then
+  that proposal is thrown away and the original `PlaywrightTimeout`
+  surfaces to pytest unchanged. Executing an approved
+  `ActionabilityStrategy` (e.g. actually waiting N ms and retrying) is a
+  genuinely separate architectural question — see `docs/gaps.md` Gap #12
+  and `LEARNINGS.md` "Scope of the actionability provider slice."
+- **The classifier's dependence on Playwright's undocumented diagnostic
+  text is a live, ongoing risk, not a historical one.**
+  `parse_playwright_call_log()` (the fix for the old
+  `classify_playwright_error()` substring-matching bug — see
+  `LEARNINGS.md` "Sprint 6B (decision)") is verified against 8 real
+  captured call logs, but depends entirely on Playwright's
+  human-readable wording (`"locator resolved to"`,
+  `"intercepts pointer events"`, etc.), not a supported API contract. A
+  future Playwright version bump could silently break it. See
+  `docs/gaps.md` Gap #13.
 - **Chaos App's component remount mechanism is verified live and did
   NOT reproduce `DETACHED_FROM_DOM` against `Locator`-based
   interactions in four escalating attempts.** `chaos_app/src/chaos/
@@ -82,47 +79,42 @@ notes whether it's tracked as a future TODO. **Full reasoning lives in
   Left here as-is as a record of the state at the time this limitation
   was first written; not a currently accurate limitation.)*
 
-## Scope boundary about to change (Sprint 6B onward — decided, not yet built)
+## Remaining scope boundary (Sprint 6C-D onward — architecture done, coverage partial)
 
-**Note (post Sprint 6A):** the `HealingAction` hierarchy, polymorphic
-`ContextCollector`, and split prompt modules below remain the committed
-Sprint 6+ architecture regardless of target failure type. `DETACHED_FROM_DOM`
-specifically has been deprioritized (see `LEARNINGS.md` Sprint 6A
-conclusion, `docs/gaps.md` Gap #4) — the bullets below describe
-architecture that will land against whichever of `NOT_VISIBLE`/
-`TIMEOUT_WAITING` is chosen next, not necessarily `DETACHED_FROM_DOM`.
+The `HealingAction` hierarchy, router-based `ContextCollector`, and
+split prompt modules are all implemented (see `LEARNINGS.md` Sprint 6B
+implementation entries) — this is no longer a "decided but not built"
+boundary, just an incomplete-coverage one:
 
-- **`HealingProposal` is still the only provider return shape in the
-  codebase today.** A `HealingAction` hierarchy (`SelectorReplacement`,
-  `RetryStrategy`, `WaitStrategy`, `VisibilityStrategy`) has been decided
-  architecturally for Sprint 6 but not yet implemented — `ProviderResult.
-  proposal` still exists; the planned rename to `ProviderResult.action`
-  and the accompanying `Healer`/`safe_mode.py`/`decision_logger.py`/
-  `response_parser.py` updates are pending. Until that refactor lands,
-  do not assume any non-selector failure type can produce a structured
-  proposal — only `SelectorReplacement`-shaped output is wired end to
-  end.
-- **`ContextCollector` is still a single class with an if/elif-shaped
-  routing method**, not yet the planned `BaseContextCollector` subclass
-  router. The Sprint 6 refactor (moving `_collect_selector_context` into
-  `collectors/selector_collector.py` unchanged, and adding a collector
-  for whichever failure type is chosen next) has been decided but not
-  implemented.
-- **`prompt_templates.py` is still one module**, not yet split into
-  `phoenix/ai/prompts/` per failure type. Planned for the sub-sprint
-  that replaces the original Sprint 6C.
+- **`ProviderResult.proposal` was renamed to `ProviderResult.action`**,
+  typed as `HealingAction`; `Healer`/`safe_mode.py`/`decision_logger.py`
+  all consume it. `SelectorReplacement` (`LOCATOR_RESOLUTION`) and
+  `ActionabilityStrategy` (`RECEIVES_EVENTS`/`VISIBLE`) are both
+  produced end-to-end; `RetryStrategy` (`REFERENCE`) is declared only —
+  no collector or provider produces it, and none is currently planned.
+- **`ContextCollector` is a router** (`phoenix/collector/context_collector.py`)
+  dispatching to `LocatorResolutionCollector`, `ActionabilityCollector`,
+  and a dormant `ReferenceCollector` by `FailureCategory` — no more
+  if/elif ladder.
+- **`phoenix/ai/prompts/` exists and holds `actionability_prompt.py` /
+  `visible_prompt.py`**, but the original selector-healing prompt is
+  still `phoenix/ai/prompt_templates.py`, not yet migrated into the same
+  package — explicitly deferred cleanup (see `LEARNINGS.md` "Future
+  cleanup, explicitly deferred, not forgotten"), not an oversight.
 
 ## Known fragility (tracked, not yet fixed)
 
 - **`outerHTML` string re-matching collides on identical elements.**
-  `ContextCollector` re-finds a scored candidate by matching its
-  `outerHTML` string a second time — two structurally identical elements
-  (e.g. `TicketList`'s three rows) would collide, with whichever matches
-  first winning regardless of which was actually scored. Sprint 3 TODO:
-  replace with a retained `ElementHandle` from the original scoring call.
-- **`context_collector.py` makes up to 4 `page.evaluate()` round-trips
-  per failure.** Correctness was prioritized over performance in Sprint
-  2; revisit once Sprint 3/4 give real cost/timing data.
+  `LocatorResolutionCollector` (moved here unchanged in the Sprint 6B
+  router split — still the original Sprint 2 logic) re-finds a scored
+  candidate by matching its `outerHTML` string a second time — two
+  structurally identical elements (e.g. `TicketList`'s three rows) would
+  collide, with whichever matches first winning regardless of which was
+  actually scored. Still-open TODO: replace with a retained
+  `ElementHandle` from the original scoring call.
+- **`LocatorResolutionCollector` makes up to 4 `page.evaluate()`
+  round-trips per failure.** Correctness was prioritized over
+  performance in Sprint 2; revisit once real cost/timing data exists.
 - **No retention policy for `healing_decisions.log`.** It's an
   append-only file with no size cap or rotation — fine for Sprint 4
   testing, will need addressing before any long-running use.

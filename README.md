@@ -27,12 +27,18 @@ Every decision — human-reviewed or autonomous — is logged today, including w
 PhoenixQA classifies failures into four types, but builds them in phases
 rather than all at once:
 
+The original four-way `FailureType` split (`selector_not_found` /
+`detached_from_dom` / `not_visible` / `timeout_waiting`) has been fully
+replaced internally by `FailureCategory` (`LOCATOR_RESOLUTION` /
+`ACTIONABILITY` / dormant `REFERENCE`) + `ActionabilityReason` (5
+values) — see below for why. Mapped onto the original four labels for
+orientation:
+
 | Failure type | Status |
 |---|---|
-| `selector_not_found` — classic renamed/rotated selector | ✅ Live (Sprint 2-5) |
-| `detached_from_dom` — framework re-render mid-action | 🔬 Investigated (Sprint 6A) — no reproduction found for `Locator`-based automation across four escalating attempts; deprioritized based on current evidence, not proven impossible — see `docs/gaps.md` Gap #4 |
-| `not_visible` — element exists but hidden/blocked | 🚧 Modeled as `FailureCategory.ACTIONABILITY` + `ActionabilityReason.VISIBLE` — decided, not yet implemented; see below |
-| `timeout_waiting` — never reaches an actionable state | 🚧 Superseded by the `FailureCategory.ACTIONABILITY` model (covers `enabled`/`editable`/`stable`/`receives_events` too) — decided, not yet implemented; see below |
+| `selector_not_found` → `FailureCategory.LOCATOR_RESOLUTION` | ✅ Live (Sprint 2-5), `SelectorReplacement` action, Safe + Autonomous Mode both verified end-to-end |
+| `detached_from_dom` → dormant `FailureCategory.REFERENCE` | 🔬 Investigated (Sprint 6A) — no reproduction found for `Locator`-based automation across four escalating attempts; deprioritized based on current evidence, not proven impossible — see `docs/gaps.md` Gap #4 |
+| `not_visible` / `timeout_waiting` → `FailureCategory.ACTIONABILITY` (5 `ActionabilityReason` values) | 🚧 In progress — `RECEIVES_EVENTS` and `VISIBLE` fully implemented, unit-tested, AND live-verified (both directions of the policy guardrail — see below); `ENABLED`/`EDITABLE` not started; `STABLE` blocked on a deterministic Chaos App mechanism. **Proposal only — `Healer` still explicitly rejects any `ActionabilityStrategy`; no execution of a wait/dismiss/scroll fix exists yet.** |
 
 Why phase it: better to prove the full pipeline (collect → analyze → heal
 → validate) end-to-end on one well-understood failure type first, then
@@ -75,21 +81,45 @@ A flat choice between `not_visible` and `timeout_waiting` as separate
 top-level types would have inherited the same ambiguity the classifier
 already had for `selector_not_found` before Sprint 4's fix.
 
-The decided replacement: `FailureCategory` (`LOCATOR_RESOLUTION` /
-`ACTIONABILITY` / a dormant `REFERENCE` for the `detached_from_dom`
-family) plus `ActionabilityReason` for the five concrete reasons above.
-`LOCATOR_RESOLUTION`, deliberately not `SELECTOR` — an unresolved
-locator has more than one plausible real cause (genuine selector drift,
-an element that's conditionally not yet mounted, the app being in an
-unexpected state), which Playwright's own message can't distinguish;
-naming the category after "selector" would have presupposed the
-diagnosis the evidence argued against. This is a decided architecture,
-not yet implemented in code — see `LEARNINGS.md` "Sprint 6B (decision)"
-and `docs/gaps.md` Gap #5/#12 for the full model, and Gap #13/#14 for
-the two limits this decision explicitly does not resolve (the model's
-dependence on Playwright's unversioned diagnostic text, and
+The replacement, now implemented and live: `FailureCategory`
+(`LOCATOR_RESOLUTION` / `ACTIONABILITY` / a dormant `REFERENCE` for the
+`detached_from_dom` family) plus `ActionabilityReason` for the five
+concrete reasons above. `LOCATOR_RESOLUTION`, deliberately not
+`SELECTOR` — an unresolved locator has more than one plausible real
+cause (genuine selector drift, an element that's conditionally not yet
+mounted, the app being in an unexpected state), which Playwright's own
+message can't distinguish; naming the category after "selector" would
+have presupposed the diagnosis the evidence argued against.
+`parse_playwright_call_log()` (the classifier), the
+`ContextCollector`/`LocatorResolutionCollector`/`ActionabilityCollector`
+router split, the `HealingAction` hierarchy, and two of the five
+`ActionabilityReason` provider paths (`RECEIVES_EVENTS`, `VISIBLE`) are
+all implemented, unit-verified, and live-verified against a real Chaos
+App + Ollama. `ENABLED`/`EDITABLE` are not started; `STABLE` is blocked
+on a deterministic Chaos App mechanism. See `LEARNINGS.md` "Sprint 6B
+(decision)" and `docs/gaps.md` Gap #5/#12 for the full model, and Gap
+#13/#14 for the two limits this decision explicitly does not resolve
+(the model's dependence on Playwright's unversioned diagnostic text, and
 `LocatorResolutionCollector`'s continued inability to tell apart *why*
 a locator never resolved).
+
+**`LLM proposes, PhoenixQA validates` (Sprint 6B):** live testing on
+`RECEIVES_EVENTS` found `llama3.2` deterministically proposing
+`wait_and_retry` for a blocker it had itself correctly described, in
+its own `reasoning`, as persistent with no dismiss affordance —
+confidence unchanged. Prompt engineering alone did not fix this (see
+`LEARNINGS.md` Sprint 6B). The response is
+`phoenix/healing/actionability_policy.py`: a deterministic guardrail
+that validates a proposed `wait_and_retry` against
+`collector_metadata` (structured DOM facts gathered by
+`ActionabilityCollector`), never against the model's freeform reasoning
+text, and corrects the strategy when the evidence doesn't support it.
+Live-verified in **both directions** — correctly blocking
+`RECEIVES_EVENTS`'s unsupported `wait_and_retry` every time it was
+tried, and correctly passing through `VISIBLE`'s two ground-truth cases
+(`permanent` → model self-selects `no_safe_recovery`, `transient` →
+model self-selects `wait_and_retry`) without needing to intervene at
+all. See Gap #11 in `docs/gaps.md`.
 
 **Important framing shift for the remaining failure types (Gap #12):**
 for `selector_not_found`, the selector itself is what's broken, and the
@@ -125,22 +155,27 @@ a hypothesis is something to find out.
 Test Failure
     │
     ▼
-Failure Classifier        ← FailureCategory (locator_resolution, actionability, reference)
-    │                          + ActionabilityReason (5 values) — decided, not yet implemented;
-    │                          today's live code still uses the flat FailureType enum
+Failure Classifier        ← parse_playwright_call_log() → ClassifiedFailure
+    │                          FailureCategory (locator_resolution, actionability, reference)
+    │                          + ActionabilityReason (5 values) — live, replaces the old flat
+    │                          FailureType enum entirely (no compatibility adapter kept)
     │
     ▼
-Context Collector          ← one collector per FailureCategory (target architecture):
-    │                          locator_resolution_collector.py (DOM snapshot, weighted scoring)
-    │                          — today's selector_collector.py, live, pending rename
-    │                          actionability_collector.py        (planned, all 5 reasons)
-    │                          reference_collector.py             (dormant, no active plan)
+Context Collector          ← router (context_collector.py) over one collector per FailureCategory:
+    │                          locator_resolution_collector.py (DOM snapshot, weighted scoring) — live
+    │                          actionability_collector.py   (RECEIVES_EVENTS, VISIBLE — live;
+    │                                                         ENABLED/EDITABLE not started; STABLE blocked)
+    │                          reference_collector.py         (dormant, no active plan)
     ▼
-LLM Analyzer               ← Ollama (local) or Anthropic API → structured HealingAction
-    │                          SelectorReplacement — live today (currently keyed off
-    │                          FailureType.SELECTOR_NOT_FOUND, target: locator_resolution)
-    │                          ActionabilityStrategy (actionability, 5 reasons) — decided, not yet implemented
-    │                          RetryStrategy (reference, dormant) — declared only
+LLM Analyzer               ← Ollama (local) or Anthropic API [stub, NotImplementedError] →
+    │                          structured HealingAction:
+    │                          SelectorReplacement    — live, Safe + Autonomous Mode verified
+    │                          ActionabilityStrategy   — live for RECEIVES_EVENTS/VISIBLE, guarded by
+    │                                                     actionability_policy.py (deterministic
+    │                                                     evidence check, not the model's own text) —
+    │                                                     PROPOSED and validated, but Healer still
+    │                                                     rejects it outright; no execution yet
+    │                          RetryStrategy            (reference, dormant) — declared only
     │
     ├──► Safe Mode        ← Human reviews full context, accepts/rejects → Ground Truth
     │
@@ -161,7 +196,7 @@ docs/gaps.md Gap #11 for why this boundary is deliberate.
 
 Autonomous Mode raises one of three distinct exception types depending on *why* it didn't heal — `HealingRejectedError` (bad/low-confidence proposal), `HealingLimitExceededError` (budget exhausted), `HealingFailedError` (provider/API crashed) — so a CI failure report says exactly what happened, not just "healing didn't work."
 
-**Current implementation status:** the `Context Collector → LLM Analyzer → HealingAction` split above is the target architecture for the next phase of work. As of today, `ContextCollector` is still a single class, `prompt_templates.py` is still one module, and providers still return `HealingProposal` (the `selector_not_found`-only shape) — the polymorphic collector/prompt structure and the `HealingAction` hierarchy are decided but not yet implemented. See [`docs/known-limitations.md`](docs/known-limitations.md) for the precise current-vs-planned boundary.
+**Current implementation status:** the `Context Collector → LLM Analyzer → HealingAction` split above is implemented, not just planned — `ContextCollector` is a router over per-category collectors, prompts live under `phoenix/ai/prompts/` (plus the not-yet-migrated `phoenix/ai/prompt_templates.py` for the selector path — see `docs/known-limitations.md`), and providers return `HealingAction` subtypes. What's NOT yet done: `Healer` executing an `ActionabilityStrategy` (it only ever proposes and rejects, never acts on one), `ActionabilityReason.ENABLED`/`EDITABLE`/`STABLE`, and `AnthropicProvider` (both methods still raise `NotImplementedError` — `ollama` is the only working provider today, despite the badge/table above listing both). See [`docs/known-limitations.md`](docs/known-limitations.md) for the precise current-vs-planned boundary.
 
 ---
 
@@ -188,13 +223,20 @@ Mechanisms ranked by real-world realism (most enterprise frontends break this wa
 
 A 5th, independent mechanism, **component remount / detach-mid-action** (`componentRemount.jsx`, `COMPONENT_REMOUNT_ENABLED`), was built in Sprint 6A specifically to give `detached_from_dom` something real to classify against. It's implemented and verified live, but — see the Scope section above — did not reproduce the target failure against `Locator`-based interactions even under a deterministic, zero-timing-randomness trigger. It remains in the codebase as a verified research tool, not as an active target for the next healing strategy.
 
+Two more independent mechanisms were built in Sprint 6B, specifically to give `ActionabilityReason.RECEIVES_EVENTS` and `.VISIBLE` real, deterministic ground truth to classify against — both are live and verified:
+
+- **`pointerEventsOverlay.jsx`** (`VITE_POINTER_EVENTS_OVERLAY_ENABLED`) — a transparent, full-viewport overlay that intercepts every click, simulating a real cookie banner / modal / sticky header blocking a click.
+- **`visibilityDelay.jsx`** (`VITE_VISIBILITY_DELAY_MODE=off|permanent|transient`, `VITE_VISIBILITY_DELAY_MS`) — hides the password input via `visibility: hidden`. `permanent` never reveals it (ground truth: `no_safe_recovery`); `transient` reveals it after the configured delay (ground truth: `wait_and_retry`) — the first mechanism built to test **both directions** of the policy guardrail live. Important: `VITE_VISIBILITY_DELAY_MS` must exceed Playwright's own built-in action retry (`fill()`=30000ms, `click()`=10000ms by default) or Playwright silently self-heals before `Healer` is ever invoked — see `LEARNINGS.md` "A wrong first attempt at TRANSIENT reveals a real architectural fact."
+
 **Controlling the chaos level:**
 
 ```bash
 # chaos_app/.env
-VITE_CHAOS_LEVEL=HIGH            # LOW | MEDIUM | HIGH
-VITE_SHADOW_DOM_ENABLED=true     # true | false — independent of level
-VITE_COMPONENT_REMOUNT_ENABLED=false   # true | false — independent of level, see note above
+VITE_CHAOS_LEVEL=HIGH                      # LOW | MEDIUM | HIGH
+VITE_SHADOW_DOM_ENABLED=true               # true | false — independent of level
+VITE_COMPONENT_REMOUNT_ENABLED=false       # true | false — independent of level, see note above
+VITE_POINTER_EVENTS_OVERLAY_ENABLED=false  # true | false — independent of level, ActionabilityReason.RECEIVES_EVENTS
+VITE_VISIBILITY_DELAY_MODE=off             # off | permanent | transient — independent of level, ActionabilityReason.VISIBLE
 ```
 
 Edit `chaos_app/.env`, then restart `npm run dev`. The "Active chaos config" panel at the top of the running app confirms which mechanisms are live — no guessing required.
@@ -244,12 +286,12 @@ PhoenixQA/
 
 ## 🔒 Privacy-first AI design
 
-| Provider    | When to use                                      |
-|-------------|--------------------------------------------------|
-| `ollama`    | Air-gapped / NDA environments, local LLM         |
-| `anthropic` | Cloud projects, best quality healing suggestions |
+| Provider    | When to use                                      | Status |
+|-------------|---------------------------------------------------|--------|
+| `ollama`    | Air-gapped / NDA environments, local LLM         | ✅ Live — the only working provider today |
+| `anthropic` | Cloud projects, best quality healing suggestions | 🔴 Stub — `AnthropicProvider.analyze_failure()`/`health_check()` both raise `NotImplementedError` |
 
-Switch via single env variable. No code changes.
+Switch via single env variable — architecturally true (`provider_factory.py` already dispatches on `AI_PROVIDER`), but setting `AI_PROVIDER=anthropic` today raises immediately, not a working alternative yet.
 
 ---
 
@@ -263,9 +305,10 @@ Switch via single env variable. No code changes.
 | Sprint 3  | LLM Analyzer — prompt engineering, structured JSON response, confidence score | ✅ Done     |
 | Sprint 4  | Safe Mode — Human-in-the-loop terminal review, JSON-lines decision log | ✅ Done     |
 | Sprint 5  | Autonomous Mode — stop conditions (attempts/tokens/time budget), confidence policy gate, distinct exception types | ✅ Done     |
-| Sprint 6  | Failure type expansion — architecture decided (action-recovery reframing, polymorphic collector, split prompts, `HealingAction` hierarchy); target failure type redirected after Sprint 6A findings | 🚧 In progress |
+| Sprint 6  | Failure type expansion — action-recovery reframing, polymorphic collector, split prompts, `HealingAction` hierarchy all implemented; target failure type redirected after Sprint 6A findings | 🚧 In progress |
 | Sprint 6A | `componentRemount.jsx` (TIMEOUT + MOUSEDOWN triggers) + classifier extended to recognize `DETACHED_FROM_DOM` | ✅ Done — controlled experiment (4 escalating configurations) found no reproduction against `Locator`-based automation; a finding about Playwright's architecture, not a mechanism gap. See `LEARNINGS.md` "Sprint 6A conclusion" |
-| Sprint 6B-D | `DetachedFromDomCollector` / `detached_prompt.py` / `RetryStrategy` end-to-end, as originally scoped | ⏸️ Redirected — `FailureCategory`/`ActionabilityReason` model decided (see `LEARNINGS.md` "Sprint 6B (decision)"), `parse_playwright_call_log()` rewrite is the next concrete implementation step, not yet started |
+| Sprint 6B | `FailureCategory`/`ActionabilityReason` model: classifier rewrite, `ContextCollector` router split, `HealingAction` hierarchy, `ActionabilityCollector` + provider path + `actionability_policy.py` guardrail for `RECEIVES_EVENTS` and `VISIBLE` | ✅ Both reasons implemented, unit-tested (134/134), AND live-verified end-to-end, including both directions of the policy guardrail. `Healer` still rejects any `ActionabilityStrategy` — proposal only, no execution. `ENABLED`/`EDITABLE` not started, `STABLE` blocked. See `LEARNINGS.md` Sprint 6B |
+| Sprint 6C-D | Remaining `ActionabilityReason` slices (`ENABLED`/`EDITABLE`), OR execute a policy-approved `ActionabilityStrategy` (Option A from Gap #12) | ⏳ Planned — genuinely open decision, not yet started, see `docs/gaps.md` Gap #12 |
 | Sprint 7  | Healing History — SQLite store, decision log, healing correctness definition | ⏳ Planned  |
 | Sprint 8  | Healing Benchmark Runner — Heuristic provider baseline, few-shot self-training, Safe vs Auto metrics | ⏳ Planned  |
 | Sprint 9  | Allure Phoenix Report, CI/CD, demo GIF                        | ⏳ Planned  |
@@ -276,7 +319,7 @@ Switch via single env variable. No code changes.
 3. The prompt layer splits the same way — one prompt module per `FailureType`, since "find a selector" and "should this action be retried, and after what wait" are different cognitive tasks for the model.
 4. `HealingProposal` is retired as the universal provider return type, replaced by a `HealingAction` hierarchy — `SelectorReplacement` (`locator_resolution`), one merged `ActionabilityStrategy` parameterized by reason + recovery kind (`actionability`, superseding the originally-declared separate `WaitStrategy`/`VisibilityStrategy`), and a dormant `RetryStrategy` (`reference`) — a required, blocking refactor touching `Healer`, `safe_mode.py`, `decision_logger.py`, and `response_parser.py`. See `LEARNINGS.md` "Sprint 6B (decision)" for the finalized shape.
 
-These four decisions remain sound regardless of which specific failure type gets the next vertical slice — they were designed to generalize, not built around `detached_from_dom` specifically. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now. A follow-up round of diagnostics (Sprint 6B, see the Scope section's `not_visible`/`timeout_waiting` note above) then found that picking one of the two remaining types outright isn't the right next move either — Playwright's own model splits failures into "did the locator resolve" and, if so, one of five actionability reasons, which the current flat enum doesn't capture. The concrete shape of the fix is an open, upcoming decision.
+These four decisions have all been implemented as described — they were designed to generalize, not built around `detached_from_dom` specifically, and turned out to generalize cleanly to `ActionabilityReason`. What changed after Sprint 6A is only the answer to "which failure type comes next": a controlled experiment against Playwright's `Locator` API (see the Scope section above and `LEARNINGS.md` "Sprint 6A conclusion" for the full hypothesis → experiment → finding → decision trail) found that `detached_from_dom` isn't a high-value target for this architecture right now. A follow-up round of diagnostics (Sprint 6B) then found that picking `not_visible` or `timeout_waiting` outright wasn't the right move either — Playwright's own model splits failures into "did the locator resolve" and, if so, one of five actionability reasons. Two of those five (`RECEIVES_EVENTS`, `VISIBLE`) are now fully built and live-verified; the remaining open decision is whether Sprint 6C-D adds a third reason or builds actual execution of an already-approved `ActionabilityStrategy` — see `docs/gaps.md` Gap #12.
 
 ---
 

@@ -29,7 +29,7 @@ Gaps are numbered in the order they were raised, not by severity or sprint.
 | 9  | Missing baseline comparison (no-healer / heuristic / LLM)     | 🟡 Resolved architecturally, not yet built                  | `HeuristicProvider` planned as an **experimental control** (not a product feature) for Sprint 7/8, to prove the LLM is actually adding value over cheap fuzzy matching. Does NOT depend on historical fingerprinting — anchors on the present DOM, not the past                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 10 | Missing stop conditions for Autonomous Mode                   | 🟢 Implemented and verified live                            | `HealingBudget`/`AutonomousPolicy` built and unit tested (13 tests). Confirmed live against real Chaos App + Ollama: zero terminal prompts, correct auto-accept (0.85-0.95 confidence) and auto-reject (0.0, truncated JSON) behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 11 | Confidence ≠ correctness                                      | 🟡 Resolved architecturally (deliberately NOT fully closed) | An LLM can be 100% confident and still point at the wrong element. Resolved by keeping business/correctness validation OUT of Healer entirely — stays the test's responsibility (Option B), with Healer only checking technical retry success (Option C framing). Deeper validation hooks deferred until real usage justifies them — which happened once, concretely, in Sprint 6B: live testing found `llama3.2` deterministically proposing `wait_and_retry` for a `RECEIVES_EVENTS` blocker it had itself correctly described as persistent with no dismiss affordance, confidence unchanged. Response was `phoenix/healing/actionability_policy.py` — a deterministic guardrail validating the ONE observed failure mode against `collector_metadata`, not a general confidence-calibration mechanism. Confirms the original framing (deeper hooks only when real usage justifies them) rather than replacing it — this is one narrow, evidence-triggered hook, not the general validation layer Option A/B considered and rejected in Sprint 5. See `LEARNINGS.md` Sprint 6B "[Decision] LLM proposes, PhoenixQA validates"                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| 12 | "Recover selector" vs "recover action"                        | 🟡 Resolved architecturally, implementation partial          | For actionability failures there is no broken selector to replace — the selector may be correct and the locator may resolve; what failed is the in-flight ACTION. Resolved by reframing `Healer`'s job as "action recovery" with selector replacement as the special case for `FailureCategory.LOCATOR_RESOLUTION`. Sprint 6B's decided model gives this a concrete shape: `SelectorReplacement` for `LOCATOR_RESOLUTION`, one merged `ActionabilityStrategy` (parameterized by `reason` + `strategy` kind) for `ACTIONABILITY`, dormant `RetryStrategy` for `REFERENCE` — all three declared in `phoenix/healing/actions.py`, and `Healer` explicitly rejects any unsupported action type rather than assuming one. `SelectorReplacement` is fully wired end-to-end (provider produces it, `Healer` consumes it, live-verified in Sprint 4/5). `ActionabilityStrategy` for `RECEIVES_EVENTS` is now genuinely PRODUCED end-to-end AND LIVE-VERIFIED (`ActionabilityCollector` → `actionability_prompt.py` → `OllamaProvider` → `parse_actionability_response()`, confirmed against a real Chaos App + real Ollama round-trip, not just unit tests) — but `Healer` still rejects it as unsupported by design; nothing executes a `wait_and_retry`/`dismiss_blocker`/etc. strategy yet, and the CONTENT of a live proposal (which strategy the model actually picks) has not yet been inspected. What remains open is purely the execution side, not the proposal side. See `LEARNINGS.md` Sprint 6B (decision), Sprint 6B (implementation), and "Live run confirms the full RECEIVES_EVENTS pipeline, end to end"                                                                                                                                                                                                                                                                                                                          |
+| 12 | "Recover selector" vs "recover action"                        | 🟡 Resolved architecturally, implementation partial          | For actionability failures there is no broken selector to replace — the selector may be correct and the locator may resolve; what failed is the in-flight ACTION. Resolved by reframing `Healer`'s job as "action recovery" with selector replacement as the special case for `FailureCategory.LOCATOR_RESOLUTION`. Sprint 6B's decided model gives this a concrete shape: `SelectorReplacement` for `LOCATOR_RESOLUTION`, one merged `ActionabilityStrategy` (parameterized by `reason` + `strategy` kind) for `ACTIONABILITY`, dormant `RetryStrategy` for `REFERENCE` — all three declared in `phoenix/healing/actions.py`, and `Healer` explicitly rejects any unsupported action type rather than assuming one. `SelectorReplacement` is fully wired end-to-end (provider produces it, `Healer` consumes it, live-verified in Sprint 4/5). `ActionabilityStrategy` is now genuinely PRODUCED end-to-end AND LIVE-VERIFIED for TWO reasons (`RECEIVES_EVENTS` AND `VISIBLE` — `ActionabilityCollector` → `{actionability,visible}_prompt.py` → `OllamaProvider` → `actionability_response_parser.py` → `actionability_policy.py`, confirmed against a real Chaos App + real Ollama round-trip, not just unit tests). The CONTENT of live proposals has now been inspected, not just their arrival: `RECEIVES_EVENTS` needed policy correction every time sampled; `VISIBLE` self-selected the correct strategy both times, unaided. `Healer` still rejects `ActionabilityStrategy` as unsupported by design regardless of reason — nothing executes a `wait_and_retry`/`dismiss_blocker`/etc. strategy yet. What remains open is purely the execution side, not the proposal side. See `LEARNINGS.md` Sprint 6B (decision), Sprint 6B (implementation), and the `VISIBLE` live-verification entries                                                                                                                                                                                                                                                                                                                          |
 | 13 | Classifier model depends on Playwright's diagnostic text, not a stable API | 🔴 Open | `parse_playwright_call_log()` (Gap #5) depends entirely on Playwright's human-readable call-log wording (`"locator resolved to"`, `"element is not X"`, `"intercepts pointer events"`) — undocumented, unversioned strings, not a supported API contract. This project has already found two of its own hand-crafted message assumptions wrong (Sprint 4, Sprint 6B) without any Playwright version change; a real upgrade is at least as capable of silently breaking the parser. Mitigation is procedural (`ClassifiedFailure.raw_message` always retains the full call log; a Playwright upgrade deserves a manual spot-check against a live run, not just green CI), not a design fix that removes the risk. A future candidate: request structured actionability metadata from Playwright upstream — noted, not committed to. See `LEARNINGS.md` Sprint 6B (decision) |
 | 14 | `LocatorResolutionCollector` can't distinguish *why* a locator never resolved | 🔴 Open | Renaming the category from `SELECTOR` to `LOCATOR_RESOLUTION` (Gap #12) stops the name from presupposing a broken selector, but doesn't give the collector any way to actually tell apart the causes Sprint 6B's `async_delay` diagnostic surfaced: genuine selector drift, a conditionally-not-yet-mounted element, or the app being in an unexpected state — Playwright's message is identical (`"waiting for locator(...)"`, nothing further) in all three. Not blocking adoption of the model; `SelectorReplacement` remains the default action for this category until a better signal exists. A DOM-poll-after-timeout approach is noted as a candidate direction, not committed to. See `LEARNINGS.md` Sprint 6B (decision) |
 
@@ -52,13 +52,18 @@ FailureCategory.LOCATOR_RESOLUTION   # locator never resolved
 └── action: SelectorReplacement (default; see Gap #14 for its limits)  ✅ live, verified Sprint 4/5
 
 FailureCategory.ACTIONABILITY        # locator resolved, action could not proceed
-├── reason: VISIBLE                                                    ⬜ not started
+├── reason: VISIBLE                                                    🟡 Collected + ActionabilityStrategy PRODUCED end-to-end,
+│   └── action: ActionabilityStrategy (temporal t0/t1 evidence,            unit- AND live-verified BOTH directions (permanent →
+│       validated by actionability_policy.py)                              no_safe_recovery, transient → wait_and_retry, both
+│                                                                            self-selected correctly, no policy correction needed
+│                                                                            either time). Healer still rejects it — no execution.
 ├── reason: ENABLED                                                    ⬜ not started
 ├── reason: EDITABLE                                                   ⬜ not started
 ├── reason: STABLE                                                     ⬜ blocked — no deterministic Chaos App mechanism, see LEARNINGS.md Sprint 6B (decision)
 └── reason: RECEIVES_EVENTS (names the specific blocking element)      🟡 Context collected + ActionabilityStrategy genuinely PRODUCED
     └── action: ActionabilityStrategy (reason + strategy kind +           end-to-end, unit- AND live-verified (real Chaos App + Ollama).
-        optional wait/blocking element)                                   Healer still rejects it — no execution exists yet.
+        optional wait/blocking element)                                   Guardrail corrects the model's proposal every time sampled.
+                                                                            Healer still rejects it — no execution exists yet.
 
 FailureCategory.REFERENCE            # was actionable, then lost mid-action — dormant
 └── action: RetryStrategy (declared, no active collector; see Gap #4)  ⬜ dormant by design, not scheduled
@@ -71,29 +76,28 @@ replaced (no compatibility adapter kept in code), while
 (`"actionability:stable"`, etc.) purely for human/dashboard readability,
 not as a second source of truth. `classify_playwright_error()` →
 `parse_playwright_call_log()` (the classifier itself), the
-`ContextCollector`/`LocatorResolutionCollector` router split, the
-`HealingAction` hierarchy, `ActionabilityCollector`'s first slice
-(`RECEIVES_EVENTS` only), and the `RECEIVES_EVENTS` provider path
+`ContextCollector`/`LocatorResolutionCollector`/`ActionabilityCollector`
+router split, the `HealingAction` hierarchy, and the full provider path
+for BOTH `RECEIVES_EVENTS` and `VISIBLE`
 (`phoenix/ai/prompts/actionability_prompt.py` +
+`phoenix/ai/prompts/visible_prompt.py` +
 `phoenix/ai/actionability_response_parser.py`, routed by
-`OllamaProvider.analyze_failure()`) are all implemented, unit-verified,
-AND now live-verified end-to-end — see `LEARNINGS.md` Sprint 6B
-(implementation) and "Live run confirms the full RECEIVES_EVENTS
-pipeline, end to end" for each vertical slice and the live run itself.
-Confirmed against a real Chaos App + real Ollama (`llama3.2`): the
-pipeline reaches a real `ActionabilityStrategy` proposal and `Healer`
-correctly rejects it, original `PlaywrightTimeout` unchanged. NOT yet
-inspected: the CONTENT of a live proposal (which strategy the model
-actually picked for this specific overlay, whether the reasoning was
-sound) — the live run proved the pipeline arrives at a proposal, not
-that the proposal itself is good. Next concrete step: decide between
-building actual execution of an
-`ActionabilityStrategy` (a genuinely separate architectural question —
-`Healer.attempt_heal()` today returns a bare healed-selector string,
-which doesn't fit "wait N ms then retry" or "click this other thing
-first" — see `LEARNINGS.md` "Scope of the actionability provider slice"
-for the full reasoning) versus moving on to a second
-`ActionabilityReason`.
+`OllamaProvider.analyze_failure()`) are all implemented, unit-verified
+(134/134), AND live-verified end-to-end for both reasons — see
+`LEARNINGS.md` Sprint 6B (implementation) and the `VISIBLE`
+verification entries for each vertical slice and the live runs
+themselves. `actionability_policy.py`'s deterministic guardrail is
+confirmed working in **both directions**: correcting `RECEIVES_EVENTS`
+every time it was sampled, and passing `VISIBLE` through unmodified
+both times, because the model got both `VISIBLE` cases right on its
+own. `Healer` still rejects any `ActionabilityStrategy` outright for
+both reasons — no execution exists yet. Next concrete step: decide
+between building actual execution of an `ActionabilityStrategy` (a
+genuinely separate architectural question — `Healer.attempt_heal()`
+today returns a bare healed-selector string, which doesn't fit "wait N
+ms then retry" or "click this other thing first" — see `LEARNINGS.md`
+"Scope of the actionability provider slice" for the full reasoning)
+versus moving on to a third `ActionabilityReason` (`ENABLED`/`EDITABLE`).
 
 ## Where to read more
 

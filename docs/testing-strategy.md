@@ -30,18 +30,18 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 113 tests, all passing.**
+**Current state: 134 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
 
 | Module under test | File | What's covered |
 |---|---|---|
 | Selector tokenization | `test_locator_resolution_collector.py` | Rotation suffix stripping, attribute selector parsing, id/class shapes — moved out of `test_context_collector.py` in the Sprint 6B router split (see `LEARNINGS.md`), same tests, unchanged |
 | Failure classification | `test_failure_classifier.py` | `parse_playwright_call_log()` — `FailureCategory.LOCATOR_RESOLUTION` vs `ACTIONABILITY` (all five `ActionabilityReason` values) vs `UNKNOWN`, built entirely from real captured Playwright call-log output, not hand-crafted samples (see `LEARNINGS.md` Sprint 6B) |
 | `ContextCollector` routing | `test_context_collector.py` | Router-only: delegates to `LocatorResolutionCollector`/`ActionabilityCollector` per `FailureCategory`, raises `NotImplementedError` loudly for the dormant `REFERENCE` category — collector-specific logic lives in each collector's own test file, not here |
-| Actionability context collection | `test_actionability_collector.py` | `RECEIVES_EVENTS` only (Sprint 6B): two independent blocker confirmations (call log + `elementFromPoint()` DOM probe), graceful handling when the DOM probe finds nothing, `NotImplementedError` for the four remaining `ActionabilityReason` values, confirmed via `page.evaluate.assert_not_called()` that no DOM work is attempted for an unimplemented reason, `animationName`/`transitionProperty` pass-through (the fields `actionability_policy.py` depends on) |
-| Actionability prompt content | `test_actionability_prompt.py` | `SYSTEM_PROMPT` content itself, not just its rendering: presence of the self-consistency check, the corrected `no_safe_recovery` example matching the real captured overlay HTML (regression guard against reintroducing the original misleading example), the retained positive `dismiss_blocker` example, the narrowed `blocking_element` field description, plus `build_user_prompt()`'s rendering logic |
-| Actionability LLM response parsing | `test_actionability_response_parser.py` | `ActionabilityStrategy` parsing for `RECEIVES_EVENTS`: every `ActionabilityStrategyKind` value, hallucinated/unrecognized strategy strings falling back to `NO_SAFE_RECOVERY` rather than crashing, `force_not_allowed` parsed (not rejected) despite the prompt discouraging it, `suggested_wait_ms`/`blocking_element` coercion, and the same fenced/stray-text/truncated-JSON defensive coverage as `test_response_parser.py` (see `LEARNINGS.md` Sprint 6B — actionability provider path) |
-| Actionability strategy policy | `test_actionability_policy.py` | Deterministic `WAIT_AND_RETRY` guardrail (Sprint 6B): correction when `collector_metadata` shows no animation/transition evidence, pass-through when it does, every other `ActionabilityStrategyKind` value left completely untouched (parametrized), original object not mutated (`dataclasses.replace` returns a new one) — built after live testing found `llama3.2` deterministically proposing `wait_and_retry` for a blocker it had itself correctly diagnosed as persistent and non-dismissible |
-| Provider category routing | `test_ollama_provider.py` | First unit-level tests `OllamaProvider` has ever had (Sprint 3-5 verification for the selector path was live-run-only). Confirms `analyze_failure()` selects the correct prompt/parser pair by `HealingContext.category`, that an unrecognized category/reason combination raises `NotImplementedError` before any network call, that a malformed actionability response still returns a well-typed `ActionabilityStrategy` rather than crashing, that `options.temperature`/`seed` are pinned in every request payload, and that a policy-corrected `wait_and_retry` proposal is logged twice — the raw model output unmodified, then the correction as a separate event. `httpx.get`/`.post` fully mocked, no live Ollama call |
+| Actionability context collection | `test_actionability_collector.py` | `RECEIVES_EVENTS` (Sprint 6B): two independent blocker confirmations (call log + `elementFromPoint()` DOM probe), graceful handling when the DOM probe finds nothing, `animationName`/`transitionProperty` pass-through. `VISIBLE` (Sprint 6B, second reason): two-snapshot temporal evidence (`_state_changed()` across t0/t1, including a missing-snapshot-counts-as-changed edge case). `NotImplementedError` for the three still-unimplemented `ActionabilityReason` values, confirmed via `page.evaluate.assert_not_called()` that no DOM work is attempted for an unimplemented reason |
+| Actionability prompt content | `test_actionability_prompt.py`, `test_visible_prompt.py` | `actionability_prompt.py` (`RECEIVES_EVENTS`): presence of the self-consistency check, the corrected `no_safe_recovery` example matching the real captured overlay HTML (regression guard against reintroducing the original misleading example), the retained positive `dismiss_blocker` example, the narrowed `blocking_element` field description. `visible_prompt.py` (`VISIBLE`, new file): the "two observations, not a style declaration" framing, both few-shot examples (no-change → `no_safe_recovery`, observed-change → `wait_and_retry`), and the restriction to only `wait_and_retry`/`no_safe_recovery` as valid strategies for this reason. Both files' `build_user_prompt()` rendering logic covered too |
+| Actionability LLM response parsing | `test_actionability_response_parser.py` | `ActionabilityStrategy` parsing shared across both reasons: every `ActionabilityStrategyKind` value, hallucinated/unrecognized strategy strings falling back to `NO_SAFE_RECOVERY` rather than crashing, `force_not_allowed` parsed (not rejected) despite the prompt discouraging it, `suggested_wait_ms`/`blocking_element` coercion, and the same fenced/stray-text/truncated-JSON defensive coverage as `test_response_parser.py` |
+| Actionability strategy policy | `test_actionability_policy.py` | Deterministic guardrail (Sprint 6B), one validator per reason: `validate_receives_events_strategy()` — correction when `collector_metadata` shows no animation/transition evidence, pass-through when it does; `validate_visible_strategy()` — correction when the two-snapshot evidence shows no observed change, pass-through when it does. Every other `ActionabilityStrategyKind` value left completely untouched (parametrized) for both, original object not mutated (`dataclasses.replace` returns a new one) — built after live testing found `llama3.2` deterministically proposing `wait_and_retry` for a `RECEIVES_EVENTS` blocker it had itself correctly diagnosed as persistent and non-dismissible |
+| Provider category routing | `test_ollama_provider.py` | Confirms `analyze_failure()` selects the correct prompt/parser pair by `HealingContext.category` AND `actionability_reason` (both `RECEIVES_EVENTS` and `VISIBLE` branches), that an unrecognized category/reason combination raises `NotImplementedError` before any network call, that a malformed actionability response still returns a well-typed `ActionabilityStrategy` rather than crashing, that `options.temperature`/`seed` are pinned in every request payload, and that a policy-corrected `wait_and_retry` proposal is logged twice — the raw model output unmodified, then the correction as a separate event — for both reasons via the shared `_run_actionability_policy()` helper. `httpx.get`/`.post` fully mocked, no live Ollama call |
 | LLM response parsing (selector) | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
 | Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt) |
 | Budget/policy enforcement | `test_autonomous_policy.py` | Total-vs-per-selector attempt limits, token limits, `None`-safe token handling, policy configurability |
@@ -59,15 +59,18 @@ the unit layer is pulling real weight, not just padding a test count.
 **Known gap:** `Healer`/`safe_mode.py` interaction with a real
 Playwright `Page` and a real Ollama call is *not* unit tested — by
 design, since that requires the integration layer below.
-`ActionabilityCollector`'s `RECEIVES_EVENTS` context gathering and the
-`actionability_prompt.py`/`actionability_response_parser.py` provider
-path built on top of it (both Sprint 6B) are unit-tested only via a
-mocked `page.evaluate()`/`httpx`, same as everything else in this
-section — but have ALSO now been confirmed once against a real browser
-+ `pointerEventsOverlay.jsx` + a real Ollama call (see `LEARNINGS.md`
-"Live run confirms the full RECEIVES_EVENTS pipeline, end to end").
-One live run is a confirmation, not a regression guard — the unit
-suite above remains what runs on every commit; see `docs/gaps.md`
+`ActionabilityCollector`'s context gathering and the
+`actionability_prompt.py`/`visible_prompt.py`/
+`actionability_response_parser.py` provider path built on top of it
+(Sprint 6B) are unit-tested only via a mocked `page.evaluate()`/`httpx`,
+same as everything else in this section — but have ALSO now been
+confirmed against a real browser + real Ollama call for BOTH
+implemented reasons: `RECEIVES_EVENTS` via `pointerEventsOverlay.jsx`
+(one live run, guardrail correction confirmed), `VISIBLE` via
+`visibilityDelay.jsx` (two live runs, one per mode, confirming both
+directions of the guardrail — correction NOT needed either time). A
+handful of live runs is a confirmation, not a regression guard — the
+unit suite above remains what runs on every commit; see `docs/gaps.md`
 Gap #5/#12 for the current status.
 
 ---
@@ -218,7 +221,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 113 tests, all passing |
+| Unit | ✅ Substantial | 134 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |
