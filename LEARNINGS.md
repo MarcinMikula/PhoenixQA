@@ -4327,6 +4327,109 @@ values, using two different evidence designs (CSS-declaration-based for
 
 ---
 
+## Sprint 8 (pre-coding) — narrow baseline slice (Gap #9), not the full Benchmark Runner
+
+### [Decision] C before B, wide A — verify the LLM is adding value before extending or executing its output
+
+Per direct discussion, following up on the Sprint 6C-D fork left open at
+the end of Sprint 6B (build execution of an approved
+`ActionabilityStrategy`, vs. a third `ActionabilityReason`): neither.
+`RH-1` ("does an LLM outperform a cheap deterministic heuristic?") is
+the project's own stated central question and remains fully open —
+`ACTIONABILITY` now has real mechanics (two reasons, a policy guardrail,
+live verification in both directions) without ever having answered it.
+Extending further (`ENABLED`/`EDITABLE`) or investing in execution
+(`Healer` acting on an approved `ActionabilityStrategy`) both add cost
+to a pipeline whose core premise hasn't been checked yet.
+
+Sequencing decided: **C (baseline) → narrow A (`VISIBLE` execution only)
+→ B only if evidence justifies it**, not C → B → A as originally
+sketched at the end of Sprint 6B, and not the full A (execute every
+approved strategy across every reason) either.
+
+### [Decision] The `RECEIVES_EVENTS`/`VISIBLE` contrast is itself an argument for C, not just a reason to do it eventually
+
+Live evidence already on record (Sprint 6B) points opposite directions
+for the two implemented reasons: `RECEIVES_EVENTS` needed
+`actionability_policy.py`'s correction on every sample gathered (n=4);
+`VISIBLE` self-selected the ground-truth-correct strategy unaided in
+both tested modes (n=1 each). Taken together with `ActionabilityReason.VISIBLE`
+being the only implemented reason where `ActionabilityCollector` already
+gathers a boolean fact (`target_state_changed_during_observation`)
+strong enough to *be* the decision rather than merely inform one, this
+raises a sharper version of RH-1 for `VISIBLE` specifically: not
+"is the LLM somewhat better," but "does the LLM add anything measurable
+at all over reading one field `actionability_policy.py` already
+computes." Recorded as a hypothesis motivating the design below, not
+yet as a finding — no comparison has been run.
+
+### [Decision] Baseline shape is per-`FailureCategory`, not one universal `HeuristicProvider`
+
+The original Gap #9 design (fuzzy/Levenshtein token matching, zero LLM
+calls, same `BaseProvider` interface) stays correct for
+`LOCATOR_RESOLUTION` — matching a broken selector's tokens against live
+DOM attributes is a real algorithm that can be wrong, same shape of
+problem the LLM is solving. It is the wrong shape for `ACTIONABILITY`,
+where the evidence a "heuristic" would use is not fuzzy at all — it's
+the same structured `collector_metadata` `actionability_policy.py`
+already reads. Building one `HeuristicProvider` that tries to cover both
+would either dumb down the real fuzzy-matching case or overstate what
+the actionability case needs. Split into two separate, independently
+buildable pieces instead:
+
+1. **`HeuristicProvider`** (`phoenix/ai/heuristic_provider.py`) —
+   `LOCATOR_RESOLUTION` only, as originally scoped in Sprint 2's Gap #9
+   discussion. Same `BaseProvider` interface, zero LLM calls, fuzzy
+   token matching against the live DOM.
+2. **`PolicyOnlyProvider`** (name not finalized — candidates:
+   `PolicyOnlyProvider`, `DeterministicActionabilityProvider`) —
+   `ACTIONABILITY`/`VISIBLE` only. Zero LLM calls; reads
+   `HealingContext.collector_metadata` directly and returns
+   `wait_and_retry` if `target_state_changed_during_observation` is
+   `true`, `no_safe_recovery` otherwise — literally the same rule
+   `actionability_policy.py`'s `validate_visible_strategy()` already
+   encodes as a correction check, now promoted to be the decision-maker
+   itself rather than a guardrail on someone else's decision.
+   `RECEIVES_EVENTS` is deliberately excluded from this provider for
+   now — its CSS-declaration-based evidence is weaker signal than
+   `VISIBLE`'s temporal observation (see the Future work item on
+   retrofitting it, tracked below), so a policy-only decision there
+   would be a noisier comparison, not a cleaner one.
+
+### [Decision] Comparison scope: enough samples to answer "is there a difference," not a publishable table
+
+Explicitly NOT the full `CHAOS_LEVELS × shadow_dom_enabled` matrix from
+the original Sprint 8 Healing Benchmark Runner design (see TODO list,
+`README.md`'s Chaos Levels section) — that remains the eventual target
+once there's a real reason to believe the comparison is worth running at
+that scale. For this slice: `HeuristicProvider` vs. `llama3.2` on a
+handful of `LOCATOR_RESOLUTION` live runs (question: does fuzzy matching
+already solve most rotation-suffix cases, consistent with the original
+Gap #9 framing); `PolicyOnlyProvider` vs. `llama3.2` on the same two
+`VISIBLE` ground-truth shapes (`permanent`/`transient`) already exercised
+in Sprint 6B. If `PolicyOnlyProvider` matches `llama3.2` on both, that's
+a real, reportable finding on its own — not a reason to abandon the
+comparison for being "too small," per this project's own established
+position (Sprint 2, Gap #9 framing) that a null/negative result is a
+finding, not a failure to find one.
+
+### [Follow-up] Immediate next steps, not yet started
+
+- Implement `HeuristicProvider` for `LOCATOR_RESOLUTION` (fuzzy/Levenshtein,
+  reusing `tokenize_selector()` per the original Gap #9 clarification
+  that the heuristic anchors on the present DOM, not history)
+- Implement `PolicyOnlyProvider` (or renamed) for `ACTIONABILITY`/`VISIBLE`
+- Run both against the existing Chaos App mechanisms already built for
+  exactly this purpose (`selector_rotation`/`dom_mutation` for the
+  first; `visibilityDelay.jsx` for the second) — no new Chaos App
+  mechanism needed for this slice
+- Decide, based on what these two comparisons actually show, whether
+  Sprint 8 continues toward the full multi-level benchmark runner, or
+  whether the result is conclusive enough at small scale to move
+  directly to narrow `VISIBLE` execution (Option A, narrowed) instead
+
+---
+
 ## TODO (future sprints)
 - Future sprint (not yet assigned): decide whether is_visible()/get_text() should support healing=True at all, and what "healing" means for a boolean-returning assertion vs an action — surfaced by test_invalid_credentials failing on MSG_ERROR despite successful click/fill healing elsewhere in the same test
 - Sprint 1: implement CHAOS_LEVELS as dict (LOW/MEDIUM/HIGH, level → mechanism list), not count-based
@@ -4386,3 +4489,4 @@ values, using two different evidence designs (CSS-declaration-based for
 - Gap #13 (NEW): the whole model depends on Playwright's human-readable diagnostic text, not a documented API — `ClassifiedFailure.raw_message` always retains the full call log as a mitigation, and a Playwright version bump deserves a manual spot-check, not just green CI, until something more structured exists
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
+- Sprint 8 (NEW, pre-coding decision, per direct discussion): sequencing set to C (baseline) → narrow A (`VISIBLE` execution only) → B only if evidence justifies it — not the Sprint 6C-D fork's original C → B → A. Baseline split into two pieces, not one universal `HeuristicProvider`: `HeuristicProvider` (fuzzy/Levenshtein, `LOCATOR_RESOLUTION` only, original Gap #9 scope) + a new `PolicyOnlyProvider` (name not finalized, `ACTIONABILITY`/`VISIBLE` only, zero LLM calls, decides directly off `collector_metadata` using the same rule `actionability_policy.py` already encodes as a guardrail). Comparison scope deliberately small (existing Chaos App mechanisms, no new benchmark matrix) — enough to answer "is there a difference," not to produce the full multi-level CHAOS_LEVELS × shadow_dom table. Neither provider implemented yet. See `LEARNINGS.md` "Sprint 8 (pre-coding)" and `docs/gaps.md` Gap #9

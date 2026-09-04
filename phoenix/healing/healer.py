@@ -24,13 +24,16 @@ Playwright's own click()/fill() never judging business outcomes either.
 
 Sprint 6B (decision) — HealingAction migration: `result.proposal` is now
 `result.action`, typed as `HealingAction`. Only `SelectorReplacement` is
-implemented end-to-end today — `ActionabilityStrategy`/`RetryStrategy`
-are declared (phoenix/healing/actions.py) but no provider produces them
-yet, since `ContextCollector` only builds a `HealingContext` for
-`FailureCategory.LOCATOR_RESOLUTION`. Both `_attempt_heal_safe` and
-`_attempt_heal_autonomous` explicitly reject any non-`SelectorReplacement`
-action rather than assuming one — a narrow, behavior-preserving refactor,
-not the start of actionability recovery itself.
+consumed end-to-end today — `ActionabilityStrategy` is produced by
+`OllamaProvider` for `RECEIVES_EVENTS` and `VISIBLE` (Sprint 6B, both
+live-verified) but is still explicitly rejected by `Healer` via an
+`isinstance(action, SelectorReplacement)` check — no execution exists
+yet. `RetryStrategy` (the dormant `FailureCategory.REFERENCE`) remains
+declared-only in `phoenix/healing/actions.py`. Both `_attempt_heal_safe`
+and `_attempt_heal_autonomous` reject any non-`SelectorReplacement`
+action rather than assuming one — deliberate, not an oversight: nothing
+in `Healer` yet knows how to retry a wait/dismiss strategy the way it
+knows how to retry a healed selector.
 """
 from playwright.sync_api import Page
 

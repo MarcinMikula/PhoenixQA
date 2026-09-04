@@ -8,14 +8,17 @@ behavior-preserving refactor.
 
 Replaces HealingProposal as the universal provider return shape.
 SelectorReplacement is the FailureCategory.LOCATOR_RESOLUTION-specific
-member — today's only live, end-to-end path. ActionabilityStrategy
-(FailureCategory.ACTIONABILITY, RECEIVES_EVENTS only) is produced by
-OllamaProvider (Sprint 6B) but still rejected outright by Healer — no
-execution exists yet. RetryStrategy (the dormant FailureCategory.REFERENCE)
-remains declared-only, same pattern as FailureType's original four
-members in Sprint 2 — declared, not all implemented at once. Healer
-explicitly rejects anything that isn't a SelectorReplacement rather than
-silently mishandling it (see healer.py).
+member — today's only live, end-to-end CONSUMED path (Healer acts on
+it). ActionabilityStrategy (FailureCategory.ACTIONABILITY) is produced
+by OllamaProvider for two of five ActionabilityReason values —
+RECEIVES_EVENTS and VISIBLE (Sprint 6B, both live-verified) — but still
+rejected outright by Healer; no execution exists yet.
+ENABLED/EDITABLE/STABLE remain unimplemented at the collector/prompt
+level, not just unconsumed. RetryStrategy (the dormant
+FailureCategory.REFERENCE) remains declared-only, same pattern as
+FailureType's original four members in Sprint 2 — declared, not all
+implemented at once. Healer explicitly rejects anything that isn't a
+SelectorReplacement rather than silently mishandling it (see healer.py).
 """
 from dataclasses import dataclass, field
 from enum import Enum
