@@ -4413,16 +4413,79 @@ comparison for being "too small," per this project's own established
 position (Sprint 2, Gap #9 framing) that a null/negative result is a
 finding, not a failure to find one.
 
-### [Follow-up] Immediate next steps, not yet started
+### [Implementation] Both baseline providers built — `HeuristicProvider` and `PolicyOnlyProvider`
 
-- Implement `HeuristicProvider` for `LOCATOR_RESOLUTION` (fuzzy/Levenshtein,
-  reusing `tokenize_selector()` per the original Gap #9 clarification
-  that the heuristic anchors on the present DOM, not history)
-- Implement `PolicyOnlyProvider` (or renamed) for `ACTIONABILITY`/`VISIBLE`
+`phoenix/ai/heuristic_provider.py` (`LOCATOR_RESOLUTION` only): reuses
+`locator_resolution_collector.tokenize_selector()` directly rather than
+reimplementing rotation-suffix stripping a second time. Fuzzy matching
+via stdlib `difflib.SequenceMatcher`, not `python-Levenshtein` — same
+class of edit-distance-like signal, zero new dependency; documented as
+a deliberate substitution in the module docstring, not a silent
+shortcut. Regex-extracts the same five attribute sources
+`LocatorResolutionCollector`'s own JS scoring weights
+(`data-testid`/`aria-label`/`name`/`placeholder`/`id`; `textContent`
+excluded — not a regex-extractable attribute pair, tracked as a known
+scope limitation for this baseline, not an oversight).
+
+**A real bug caught by its own test suite before this ever touched
+live infrastructure:** the first version combined similarity and
+attribute weight multiplicatively (`similarity * weight/max_weight`)
+intending weight to break near-ties, exactly like the original
+weighted-scoring design this reuses the spirit of. Consequence not
+anticipated until a test for it was written: `id` (weight 2 of 5 = 0.4
+normalized) could never mathematically clear a 0.5 match threshold
+EVEN WITH A PERFECT TEXTUAL MATCH — a low-weight attribute source
+silently disqualified good matches instead of merely losing ties.
+Fixed by separating the two roles the multiplication had conflated:
+similarity alone gates the threshold and IS the returned confidence;
+weight only adds a tiny (`0.001`) nudge to the internal ranking score,
+just enough to break a genuine tie without ever letting a worse match
+outrank a better one. A named regression test
+(`test_perfect_match_on_lowest_weighted_attribute_still_passes_threshold`)
+protects this specifically — the same "caught by writing the test, not
+by using the code" pattern this project has hit repeatedly since
+Sprint 2's rotation-suffix regex bug.
+
+`phoenix/ai/policy_only_provider.py` (`ACTIONABILITY`/`VISIBLE` only):
+deliberately NOT a smaller LLM — the promotion of
+`actionability_policy.py`'s own `validate_visible_strategy()` evidence
+rule (`target_state_changed_during_observation` → `WAIT_AND_RETRY`,
+else `NO_SAFE_RECOVERY`) to being the decision-maker itself rather than
+a correction check on someone else's proposal. Deliberately reuses the
+identical metadata key and rule rather than a second implementation
+that could drift from the guardrail's own logic over time — flagged as
+a small follow-up (extract a shared helper both call) rather than done
+now, since duplicating one boolean check isn't worth the churn yet.
+`RECEIVES_EVENTS` explicitly excluded — its CSS-declaration-based
+evidence is a structurally weaker signal than `VISIBLE`'s observed-fact
+evidence, so a policy-only decision there wouldn't be a fair comparison
+target for this slice.
+
+Neither provider is wired into `provider_factory.py` — both remain
+directly-instantiated experimental controls, per `LEARNINGS.md`
+"HeuristicProvider is a control, not a product feature." 16 new unit
+tests (`test_heuristic_provider.py`, `test_policy_only_provider.py`),
+150/150 full unit suite, pyflakes clean. **Not yet run against the
+actual comparison this slice exists for** — both providers exist and
+are individually correct, but no script yet runs either one against
+real Chaos App mechanisms alongside `llama3.2` to produce an actual
+side-by-side result. That comparison is the next concrete step, not
+this implementation pass.
+
+
+
+### [Follow-up] Remaining next steps
+
+- ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
+  [Implementation] above
+- ~~Implement `PolicyOnlyProvider` for `ACTIONABILITY`/`VISIBLE`~~ —
+  DONE, see [Implementation] above
 - Run both against the existing Chaos App mechanisms already built for
   exactly this purpose (`selector_rotation`/`dom_mutation` for the
   first; `visibilityDelay.jsx` for the second) — no new Chaos App
-  mechanism needed for this slice
+  mechanism needed for this slice. **Not yet started** — this is the
+  actual comparison the slice exists to produce; everything so far is
+  unit-tested logic in isolation, not a result
 - Decide, based on what these two comparisons actually show, whether
   Sprint 8 continues toward the full multi-level benchmark runner, or
   whether the result is conclusive enough at small scale to move
@@ -4490,3 +4553,4 @@ finding, not a failure to find one.
 - Gap #14 (NEW): `LocatorResolutionCollector` still cannot distinguish *why* a locator never resolved (genuine selector drift vs. conditionally-not-yet-mounted element vs. wrong app state) — Playwright's message is identical in all three cases. Not blocking the model's adoption; `SelectorReplacement` stays the default action for this category until a better signal is found
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
 - Sprint 8 (NEW, pre-coding decision, per direct discussion): sequencing set to C (baseline) → narrow A (`VISIBLE` execution only) → B only if evidence justifies it — not the Sprint 6C-D fork's original C → B → A. Baseline split into two pieces, not one universal `HeuristicProvider`: `HeuristicProvider` (fuzzy/Levenshtein, `LOCATOR_RESOLUTION` only, original Gap #9 scope) + a new `PolicyOnlyProvider` (name not finalized, `ACTIONABILITY`/`VISIBLE` only, zero LLM calls, decides directly off `collector_metadata` using the same rule `actionability_policy.py` already encodes as a guardrail). Comparison scope deliberately small (existing Chaos App mechanisms, no new benchmark matrix) — enough to answer "is there a difference," not to produce the full multi-level CHAOS_LEVELS × shadow_dom table. Neither provider implemented yet. See `LEARNINGS.md` "Sprint 8 (pre-coding)" and `docs/gaps.md` Gap #9
+- Sprint 8 implementation: DONE (both baseline providers) — `phoenix/ai/heuristic_provider.py` (`LOCATOR_RESOLUTION`, fuzzy matching via stdlib `difflib` not `python-Levenshtein`, reuses `tokenize_selector()`) and `phoenix/ai/policy_only_provider.py` (`ACTIONABILITY`/`VISIBLE`, promotes `actionability_policy.py`'s own evidence rule to be the decision-maker). Caught a real bug via its own test suite before any live use: an earlier version multiplied similarity by attribute weight, which let a low-weight attribute (`id`) mathematically fail the match threshold even on a PERFECT textual match — fixed by using weight only as a tiny tie-break nudge, never a discount on similarity itself. 16 new unit tests, 150/150 full suite, pyflakes clean. **Not yet run as an actual comparison against `llama3.2`** — this is the implementation, not the benchmark result itself; see `LEARNINGS.md` "[Implementation] Both baseline providers built"

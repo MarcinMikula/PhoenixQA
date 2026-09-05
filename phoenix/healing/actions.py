@@ -63,10 +63,10 @@ class ActionabilityStrategyKind(Enum):
 @dataclass
 class ActionabilityStrategy(HealingAction):
     """
-    FailureCategory.ACTIONABILITY's action shape — produced (RECEIVES_EVENTS
-    only) by OllamaProvider, still rejected outright by Healer (no
-    execution exists yet — see healer.py). `strategy` exists alongside
-    `reason` because a single ActionabilityReason doesn't imply a single
+    FailureCategory.ACTIONABILITY's action shape — produced by
+    OllamaProvider for RECEIVES_EVENTS and VISIBLE (Sprint 6B, both
+    live-verified), still rejected outright by Healer (no execution
+    exists yet — see healer.py). `strategy` exists alongside `reason` because a single ActionabilityReason doesn't imply a single
     fix (VISIBLE alone could mean wait, scroll into view, expand a
     section, or dismiss an overlay) — see LEARNINGS.md "Sprint 6B
     (decision)".
