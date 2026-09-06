@@ -30,7 +30,7 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 150 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
+**Current state: 163 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
 
 | Module under test | File | What's covered |
 |---|---|---|
@@ -44,6 +44,7 @@ actually produced (not just hypothetical ones).
 | Provider category routing | `test_ollama_provider.py` | Confirms `analyze_failure()` selects the correct prompt/parser pair by `HealingContext.category` AND `actionability_reason` (both `RECEIVES_EVENTS` and `VISIBLE` branches), that an unrecognized category/reason combination raises `NotImplementedError` before any network call, that a malformed actionability response still returns a well-typed `ActionabilityStrategy` rather than crashing, that `options.temperature`/`seed` are pinned in every request payload, and that a policy-corrected `wait_and_retry` proposal is logged twice — the raw model output unmodified, then the correction as a separate event — for both reasons via the shared `_run_actionability_policy()` helper. `httpx.get`/`.post` fully mocked, no live Ollama call |
 | Zero-LLM baseline: `LOCATOR_RESOLUTION` | `test_heuristic_provider.py` | `HeuristicProvider` (Sprint 8, Gap #9): correct fuzzy match on a rotated `data-testid`, weight-based tie-break between two textually-equal-quality candidates, `id` rendered with a `#` prefix, empty/zero-confidence result when nothing clears the similarity threshold, `NotImplementedError` for any non-`LOCATOR_RESOLUTION` category. Includes a named regression test for a real bug caught by this suite before any live use: an earlier version let attribute weight mathematically disqualify even a PERFECT match on a low-weight attribute (`id`) — fixed by making weight a tie-break nudge, never a similarity discount |
 | Zero-LLM baseline: `ACTIONABILITY`/`VISIBLE` | `test_policy_only_provider.py` | `PolicyOnlyProvider` (Sprint 8, Gap #9): `target_state_changed_during_observation=True` → `WAIT_AND_RETRY` (mirrors Chaos App's TRANSIENT mode), `False`/missing/absent metadata → `NO_SAFE_RECOVERY` (mirrors PERMANENT mode and the same fail-safe default `actionability_policy.py` uses), `NotImplementedError` for `RECEIVES_EVENTS` and `LOCATOR_RESOLUTION` — this baseline is `ACTIONABILITY`/`VISIBLE` only, by design |
+| Baseline comparison tooling | `test_compare_baselines.py` | `scripts/compare_baselines.py`'s pure logic only (the script itself needs a live browser/Chaos App/Ollama, by design, same as `Healer`'s own live-only pieces): the live-correctness check's decision branches (exactly one match / zero / multiple / malformed selector, all mocked `Page`), the action-to-dict serialization helper, and both the ground-truth and provider-name mappings — including a named regression test for a real bug caught here (the provider-name field was originally derived from the action's module, identical for both baselines) |
 | LLM response parsing (selector) | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
 | Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt) |
 | Budget/policy enforcement | `test_autonomous_policy.py` | Total-vs-per-selector attempt limits, token limits, `None`-safe token handling, policy configurability |
@@ -223,7 +224,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 150 tests, all passing |
+| Unit | ✅ Substantial | 163 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |

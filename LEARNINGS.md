@@ -4474,21 +4474,72 @@ this implementation pass.
 
 
 
+### [Implementation] Comparison script built — `scripts/compare_baselines.py`
+
+Standalone tool, not a pytest test, not wired into CI — per the
+Sprint 8 "controlled, small-scale" framing, this runs manually against
+a live Chaos App + live Ollama and prints/logs a side-by-side result,
+rather than being the eventual Sprint 8/9 Benchmark Runner. Triggers
+the real Playwright failure directly (not through `BasePage.fill(healing=True)`)
+specifically so both the baseline provider and `OllamaProvider` receive
+the exact SAME `HealingContext` from one `ContextCollector.collect()`
+call — a fairness requirement a naive "run it twice" comparison would
+have violated. `locator_resolution`'s correctness is checked live
+against the page (`page.locator(selector).count() == 1` — the same
+technical-success question `Healer`'s own retry would ask, Option C
+framing per Gap #11) since the rotated suffix has no fixed expected
+value; `visible_permanent`/`visible_transient`'s correctness is checked
+against the two ground-truth shapes already live-verified for the LLM
+path in Sprint 6B.
+
+**Not run live during development** — no browser, Chaos App, or Ollama
+available in the environment this was written in. Verified as far as
+possible without that: `pyflakes` clean, and the script's genuinely
+pure logic (the live-correctness check's decision branches, the action
+serialization helper, both ground-truth mappings) extracted into
+`tests/unit/test_compare_baselines.py` (13 tests, mocked `Page`, no
+live browser needed) rather than left completely unverified. This
+matters because it caught a real bug before any live run could have:
+`baseline_provider` was originally derived from
+`type(action).__module__`, which is `"phoenix.healing.actions"` for
+BOTH baseline providers (that's simply where the action dataclasses
+live) — every logged record would have silently claimed the same
+provider regardless of scenario. Fixed with an explicit
+`_BASELINE_PROVIDER_NAME` mapping dict, now independently tested. Same
+"caught by writing a test, not by running the code" pattern as the
+rotation-suffix regex (Sprint 2), the `fill()`/`click()` message-shape
+gap (Sprint 4), the hardcoded log mode (Sprint 5), and
+`HeuristicProvider`'s weight-as-discount bug earlier in this same
+sprint — worth naming again given how often the pattern recurs.
+
+163/163 full unit suite, pyflakes clean. **The actual live comparison
+run — pointing this script at a real Chaos App + Ollama and reading
+what it prints — has still not happened.** That remains the genuine
+next step; everything up to here is tooling and its own correctness,
+not a result.
+
+
+
 ### [Follow-up] Remaining next steps
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
   [Implementation] above
 - ~~Implement `PolicyOnlyProvider` for `ACTIONABILITY`/`VISIBLE`~~ —
   DONE, see [Implementation] above
-- Run both against the existing Chaos App mechanisms already built for
-  exactly this purpose (`selector_rotation`/`dom_mutation` for the
-  first; `visibilityDelay.jsx` for the second) — no new Chaos App
-  mechanism needed for this slice. **Not yet started** — this is the
-  actual comparison the slice exists to produce; everything so far is
-  unit-tested logic in isolation, not a result
+- ~~Build a comparison script~~ — DONE, see `scripts/compare_baselines.py`
+  and the [Implementation] entry above
+- Actually RUN `scripts/compare_baselines.py` against a real Chaos App
+  + real Ollama, for all three scenarios (`locator_resolution`,
+  `visible_permanent`, `visible_transient`) — no new Chaos App
+  mechanism needed, everything it targets already exists
+  (`selector_rotation`/`dom_mutation`; `visibilityDelay.jsx`). **Not
+  yet started.** This is the actual comparison the whole slice exists
+  to produce; everything up to here — both providers, the script
+  itself, its own unit tests — is tooling, not a result
 - Decide, based on what these two comparisons actually show, whether
   Sprint 8 continues toward the full multi-level benchmark runner, or
   whether the result is conclusive enough at small scale to move
+  directly to narrow `VISIBLE` execution (Option A, narrowed) instead
   directly to narrow `VISIBLE` execution (Option A, narrowed) instead
 
 ---
@@ -4554,3 +4605,4 @@ this implementation pass.
 - Decisions #1-4 from Sprint 6 pre-coding (action-recovery reframing, polymorphic `ContextCollector`, split prompts, `HealingAction` hierarchy) are UNAFFECTED by the redirect — they generalize across failure types, not specifically around `DETACHED_FROM_DOM`
 - Sprint 8 (NEW, pre-coding decision, per direct discussion): sequencing set to C (baseline) → narrow A (`VISIBLE` execution only) → B only if evidence justifies it — not the Sprint 6C-D fork's original C → B → A. Baseline split into two pieces, not one universal `HeuristicProvider`: `HeuristicProvider` (fuzzy/Levenshtein, `LOCATOR_RESOLUTION` only, original Gap #9 scope) + a new `PolicyOnlyProvider` (name not finalized, `ACTIONABILITY`/`VISIBLE` only, zero LLM calls, decides directly off `collector_metadata` using the same rule `actionability_policy.py` already encodes as a guardrail). Comparison scope deliberately small (existing Chaos App mechanisms, no new benchmark matrix) — enough to answer "is there a difference," not to produce the full multi-level CHAOS_LEVELS × shadow_dom table. Neither provider implemented yet. See `LEARNINGS.md` "Sprint 8 (pre-coding)" and `docs/gaps.md` Gap #9
 - Sprint 8 implementation: DONE (both baseline providers) — `phoenix/ai/heuristic_provider.py` (`LOCATOR_RESOLUTION`, fuzzy matching via stdlib `difflib` not `python-Levenshtein`, reuses `tokenize_selector()`) and `phoenix/ai/policy_only_provider.py` (`ACTIONABILITY`/`VISIBLE`, promotes `actionability_policy.py`'s own evidence rule to be the decision-maker). Caught a real bug via its own test suite before any live use: an earlier version multiplied similarity by attribute weight, which let a low-weight attribute (`id`) mathematically fail the match threshold even on a PERFECT textual match — fixed by using weight only as a tiny tie-break nudge, never a discount on similarity itself. 16 new unit tests, 150/150 full suite, pyflakes clean. **Not yet run as an actual comparison against `llama3.2`** — this is the implementation, not the benchmark result itself; see `LEARNINGS.md` "[Implementation] Both baseline providers built"
+- Sprint 8 comparison tooling: DONE — `scripts/compare_baselines.py`, a standalone (non-pytest, non-CI) script that triggers a real Playwright failure, collects ONE shared `HealingContext`, and runs both the baseline provider and `OllamaProvider` against it for a fair side-by-side. Caught a real bug via its own test suite before any live run: `baseline_provider` was derived from `type(action).__module__`, identical for both baseline providers since that's just where the dataclasses live — fixed with an explicit, independently-tested mapping dict. 13 new unit tests (mocked, no live browser), 163/163 full suite, pyflakes clean. **The actual live run — pointing this at a real Chaos App + Ollama — has still not happened.** See `LEARNINGS.md` "[Implementation] Comparison script built"
