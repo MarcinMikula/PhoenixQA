@@ -4595,7 +4595,53 @@ window each mechanism uses, to quantify how much of "the failure" is
 really "waited less than Playwright would have anyway") is noted as a
 candidate, not committed to.
 
+### [Verification] First live comparison run — `locator_resolution`, n=3
+
+Ran `python -m scripts.compare_baselines --scenario locator_resolution
+--runs 3` against a real Chaos App (`VITE_CHAOS_LEVEL=LOW`, plain
+`selector_rotation`, no `dom_mutation`) and real Ollama (`llama3.2`).
+First genuinely live result this slice has produced — everything before
+this was providers and tooling existing and being individually correct
+in isolation, not a result.
+
+**Result: `HeuristicProvider` matched `llama3.2` exactly, 3/3.**
+
+| | `HeuristicProvider` | `llama3.2` |
+|---|---|---|
+| Correct (live-verified against the page) | 3/3 | 3/3 |
+| Confidence | 1.0 every time | 0.95 every time |
+| Cost | ~0 (regex + `difflib`) | ~875 input / ~72 output tokens per call |
+| Latency | negligible | 15844ms / 5452ms / 5452ms |
+
+For this exact shape of failure — one unambiguous candidate, a rotated
+`data-testid`, nothing else in the DOM plausibly matching — the LLM
+added no measurable value over the deterministic baseline: same
+correctness, lower confidence, real cost, real latency.
+
+**Two caveats, stated now rather than after the fact:**
+
+1. **n=3, and the simplest possible `LOCATOR_RESOLUTION` case.**
+   `LOW` + plain `selector_rotation` guarantees exactly one strong
+   candidate and a similarity of 1.0 — `HeuristicProvider`'s easiest
+   possible input. The real test for this baseline is `MEDIUM`/`HIGH`
+   with `dom_mutation` also active, where multiple structurally-similar
+   candidates could produce a genuine near-tie the weight-based
+   tie-break might resolve differently than an LLM's semantic reasoning
+   would. No data on that case yet — this result should NOT be read as
+   "the heuristic wins at every difficulty level," only as "it wins on
+   the easiest one," which is exactly Gap #15's Threat 2 in miniature:
+   the cleanest case of a failure category is the one a deterministic
+   rule is best positioned to win on.
+2. **Runs 2 and 3 both show `llm_elapsed_ms=5452`** — almost certainly
+   coincidence (or some Ollama-side caching effect on an identical
+   prompt shape) rather than a real finding, at n=3. Noted, not
+   theorized about further at this sample size.
+
+**Not yet run:** `visible_permanent`/`visible_transient` (planned for
+the next session) — this entry covers `locator_resolution` only.
+
 ### [Follow-up] Remaining next steps
+
 
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
@@ -4604,19 +4650,16 @@ candidate, not committed to.
   DONE, see [Implementation] above
 - ~~Build a comparison script~~ — DONE, see `scripts/compare_baselines.py`
   and the [Implementation] entry above
-- Actually RUN `scripts/compare_baselines.py` against a real Chaos App
-  + real Ollama, for all three scenarios (`locator_resolution`,
-  `visible_permanent`, `visible_transient`) — no new Chaos App
-  mechanism needed, everything it targets already exists
-  (`selector_rotation`/`dom_mutation`; `visibilityDelay.jsx`). **Not
-  yet started.** This is the actual comparison the whole slice exists
-  to produce; everything up to here — both providers, the script
-  itself, its own unit tests — is tooling, not a result
-- Decide, based on what these two comparisons actually show, whether
-  Sprint 8 continues toward the full multi-level benchmark runner, or
-  whether the result is conclusive enough at small scale to move
-  directly to narrow `VISIBLE` execution (Option A, narrowed) instead
-  directly to narrow `VISIBLE` execution (Option A, narrowed) instead
+- ~~Actually RUN `scripts/compare_baselines.py` for `locator_resolution`~~
+  — DONE (n=3, `HeuristicProvider` matched `llama3.2` exactly), see
+  [Verification] above. **`visible_permanent`/`visible_transient` still
+  not run** — planned for the next session, no new Chaos App mechanism
+  needed (`visibilityDelay.jsx` already exists)
+- Decide, based on what all three comparisons actually show (one down,
+  two to go), whether Sprint 8 continues toward the full multi-level
+  benchmark runner, or whether the result is conclusive enough at small
+  scale to move directly to narrow `VISIBLE` execution (Option A,
+  narrowed) instead
 
 ---
 
