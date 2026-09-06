@@ -4520,7 +4520,83 @@ not a result.
 
 
 
+### [Follow-up] Gap #15 (NEW) — three named threats to the Sprint 8 comparison's construct validity
+
+Raised in direct discussion, prompted by the observation that "a large
+part of what Chaos App simulates is cheaply solvable without an LLM"
+keeps recurring (Sprint 6B's `RECEIVES_EVENTS`/`VISIBLE` contrast, now
+the whole premise of Sprint 8) without ever being checked against
+whether the EXPERIMENT itself is measuring what it claims to. Three
+distinct threats, not one vague caveat:
+
+**Threat 1 — Playwright's own auto-waiting may already be doing most of
+the work.** Already on record in this file, just never assembled into
+one argument: *"Playwright's built-in action retry silently absorbs
+short failures — Healer is never invoked unless the Chaos App delay
+exceeds Playwright's timeout window"* and *"Playwright's Locator API
+re-resolves on every actionability check"* (the reason `DETACHED_FROM_DOM`
+never reproduced in Sprint 6A). Independent, external confirmation: a
+sibling project, TestRepairEngine, ran deterministic-only recovery
+against this same Chaos App (frozen commit, PhoenixQA's own healer
+disabled) and reported *"native Playwright waiting handled the
+exercised async delay"* at HIGH with zero healing calls needed at all —
+see their README's Sprint 3 section. Consequence: whatever reaches
+`Healer`/`ContextCollector` is already a filtered residual — everything
+Playwright's own engine could absorb never becomes a sample in this
+comparison at all. For `VISIBLE` specifically, this cuts close to the
+bone: `ActionabilityCollector`'s `target_state_changed_during_observation`
+is an external reconstruction of a fact Playwright's own actionability-
+check loop already tracks internally for its own auto-wait. It's
+plausible `PolicyOnlyProvider` wins not because the underlying problem
+is easy, but because it's recovering information Playwright already had.
+
+**Threat 2 — Chaos App's own realism ranking was never extended to the
+two newest mechanisms.** Sprint 1 built a deliberate methodology for
+this exact question (DOM Mutation 10/10, Selector Rotation 9/10, Async
+Delay 8/10, Shadow DOM 5/10) — but `pointerEventsOverlay.jsx` and
+`visibilityDelay.jsx` (Sprint 6B) were never run through it, simply
+because they didn't exist yet when that table was written. This is a
+concrete, checkable gap, not a vague worry. And there's a specific
+reason to expect it matters: `visibilityDelay.jsx` toggles a single
+clean `visibility: hidden` on a fixed timer — the purest possible case
+of this failure category. Real production visibility failures are
+messier (z-index collisions with an asynchronously-loaded cookie
+banner, CPU-load-dependent animation duration, occlusion by an
+unrelated element rather than true hiding, partial-opacity states) —
+exactly the shapes a deterministic rule is LEAST likely to handle well.
+Testing the cleanest case first isn't wrong, but a result from it risks
+being read as more general than it is.
+
+**Threat 3 — `ActionabilityReason`'s five values are a model of
+Playwright's own actionability checks, not a model of production
+failures.** They cover exactly what Playwright itself checks before an
+action (`visible`/`enabled`/`editable`/`stable`/`receives_events`) —
+not, for instance, expired-session-mid-flow, a race between two async
+operations, cross-browser rendering differences (this project only
+exercises Chromium), or iframe/cross-origin complexity (which
+TestRepairEngine's own Sprint 9 treats as a SEPARATE qualification
+effort, not a footnote). This project's own history already
+demonstrates the list of "what matters in production" isn't
+self-evident from the start: the original `DETACHED_FROM_DOM` hypothesis
+(from direct Salesforce Lightning experience) was Sprint 2's best guess
+at "the most common real failure" and did not reproduce against this
+framework's actual interaction pattern in Sprint 6A.
+
+**Consequence, not a blocker:** none of these three threats block
+running `scripts/compare_baselines.py` — they define how to READ the
+result once it exists. Whatever the comparison shows will be true for
+this test-bed, not automatically generalizable to "does an LLM help
+with self-healing" as a general claim. Filed as **Gap #15**, explicitly
+as an interpretation caveat for Sprint 8's eventual result, not as new
+scope to build before that result can be trusted. No resolution
+proposed here — a plausible future angle on Threat 1 specifically
+(comparing Playwright's default timeout against the actual observation
+window each mechanism uses, to quantify how much of "the failure" is
+really "waited less than Playwright would have anyway") is noted as a
+candidate, not committed to.
+
 ### [Follow-up] Remaining next steps
+
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
   [Implementation] above
