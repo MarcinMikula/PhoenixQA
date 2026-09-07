@@ -4699,10 +4699,68 @@ category (never changes, ever) — the harder question is
 recognizing that a change DID happen within the observation window,
 not just that nothing changed.
 
+### [Verification] Third live comparison run — `visible_transient`, n=1 — narrow slice complete
+
+Ran `python -m scripts.compare_baselines --scenario visible_transient
+--runs 1` (`VITE_VISIBILITY_DELAY_MS=30500`, correctly exceeding
+Playwright's own `fill()` default timeout — see `docs/known-limitations.md`
+for why this specific number matters). No new issues this run — both
+the config gotcha and the JSON serialization bug from the
+`visible_permanent` run stayed fixed.
+
+| | `PolicyOnlyProvider` | `llama3.2` |
+|---|---|---|
+| Correct | True (`WAIT_AND_RETRY`, matching ground truth) | True (`WAIT_AND_RETRY`) |
+| `suggested_wait_ms` | 1200 | 1200 (self-reported, matches) |
+| Confidence | 1.0 | 0.8 |
+| Cost | 0 | 1764 in / 68 out tokens |
+| Latency | negligible | 14061ms |
+
+### [Conclusion] Sprint 8's narrow baseline slice — all three planned comparisons done
+
+Consolidated across all three live runs (5 total samples: 3×
+`locator_resolution`, 1× `visible_permanent`, 1× `visible_transient`):
+
+**The baseline provider matched `llama3.2` exactly, every single
+time, in every scenario tested — 5/5.** In every case, the baseline
+also reported HIGHER confidence (1.0 vs. 0.8–0.95) at zero token cost
+and negligible latency, against `llama3.2`'s 5.4–15.8s and
+~875–1764 input tokens per call.
+
+**What this does and does not show, read against Gap #15 directly —
+not as an afterthought:**
+
+- It does NOT show "an LLM adds no value to self-healing." It shows
+  that for the SIMPLEST tested instance of `LOCATOR_RESOLUTION`
+  (one unambiguous candidate) and the two cleanest possible instances
+  of `ACTIONABILITY`/`VISIBLE` (state never changes at all / changes
+  exactly once, cleanly, on a fixed timer), a much cheaper
+  deterministic rule produces the identical answer.
+- `locator_resolution` was tested only at `VITE_CHAOS_LEVEL=LOW` — no
+  run yet at `MEDIUM`/`HIGH` with `dom_mutation` active, which is
+  where `HeuristicProvider`'s weight-based tie-break could plausibly
+  diverge from an LLM's semantic reasoning on a genuine near-tie
+  between structurally-similar candidates. This remains completely
+  untested.
+- `visible_permanent`/`visible_transient` are n=1 each — not n=3+ per
+  this project's own established standard (see Sprint 2 "Empirical
+  rigor before architecture"). Sufficient to answer "is there
+  obviously a difference" (no), not sufficient to rule out variance
+  across repeated `llama3.2` sampling the way `RECEIVES_EVENTS`'s n=4
+  sampling in Sprint 6B was.
+
+**This is the decision point the Follow-up list has been pointing to.**
+Per the original Sprint 8 sequencing (C → narrow A → B only if
+evidence justifies extending further), this 5/5 result is a
+reasonable basis to move toward narrow `VISIBLE` execution next
+(building `Healer` support for an approved `ActionabilityStrategy`,
+scoped to `VISIBLE` only) rather than first chasing harder
+`LOCATOR_RESOLUTION` cases — but that's a judgment call about how much
+more baseline evidence is enough before spending effort on execution,
+not something this result settles by itself. Decision for the next
+session, not made here.
+
 ### [Follow-up] Remaining next steps
-
-
-
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
   [Implementation] above
@@ -4710,19 +4768,23 @@ not just that nothing changed.
   DONE, see [Implementation] above
 - ~~Build a comparison script~~ — DONE, see `scripts/compare_baselines.py`
   and the [Implementation] entry above
-- ~~Actually RUN `scripts/compare_baselines.py` for `locator_resolution`
-  and `visible_permanent`~~ — BOTH DONE (see [Verification] entries
-  above): `locator_resolution` n=3, `HeuristicProvider` matched
-  `llama3.2` exactly; `visible_permanent` n=1, `PolicyOnlyProvider`
-  matched `llama3.2` exactly (`NO_SAFE_RECOVERY`, correct). **`visible_transient`
-  still not run** — the one remaining scenario, and arguably the most
-  informative one: it's the only case where the correct answer requires
-  recognizing a CHANGE happened, not just confirming nothing did
-- Decide, based on what all three comparisons actually show (two down,
-  one to go), whether Sprint 8 continues toward the full multi-level
-  benchmark runner, or whether the result is conclusive enough at small
-  scale to move directly to narrow `VISIBLE` execution (Option A,
-  narrowed) instead
+- ~~Actually RUN `scripts/compare_baselines.py` for all three
+  scenarios~~ — ALL THREE DONE (see [Verification]/[Conclusion] entries
+  above): `locator_resolution` n=3, `visible_permanent` n=1,
+  `visible_transient` n=1 — baseline matched `llama3.2` 5/5, always at
+  higher confidence, zero cost, and negligible latency vs. `llama3.2`'s
+  real token cost and 5.4–15.8s per call. Narrow slice complete
+- **Open decision for the next session:** whether this 5/5 result
+  (explicitly the SIMPLEST tested case of each category, per Gap #15
+  Threat 2) is sufficient basis to move to narrow `VISIBLE` execution
+  next (Option A, narrowed — building `Healer` support for an approved
+  `ActionabilityStrategy`), or whether it's worth first testing
+  `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` active —
+  the one untested case where a genuine near-tie between
+  structurally-similar candidates could make `HeuristicProvider`'s
+  weight-based tie-break diverge from an LLM's semantic reasoning. Not
+  decided here — see [Conclusion] above for the full reasoning either
+  way
 
 ---
 
@@ -4788,3 +4850,4 @@ not just that nothing changed.
 - Sprint 8 (NEW, pre-coding decision, per direct discussion): sequencing set to C (baseline) → narrow A (`VISIBLE` execution only) → B only if evidence justifies it — not the Sprint 6C-D fork's original C → B → A. Baseline split into two pieces, not one universal `HeuristicProvider`: `HeuristicProvider` (fuzzy/Levenshtein, `LOCATOR_RESOLUTION` only, original Gap #9 scope) + a new `PolicyOnlyProvider` (name not finalized, `ACTIONABILITY`/`VISIBLE` only, zero LLM calls, decides directly off `collector_metadata` using the same rule `actionability_policy.py` already encodes as a guardrail). Comparison scope deliberately small (existing Chaos App mechanisms, no new benchmark matrix) — enough to answer "is there a difference," not to produce the full multi-level CHAOS_LEVELS × shadow_dom table. Neither provider implemented yet. See `LEARNINGS.md` "Sprint 8 (pre-coding)" and `docs/gaps.md` Gap #9
 - Sprint 8 implementation: DONE (both baseline providers) — `phoenix/ai/heuristic_provider.py` (`LOCATOR_RESOLUTION`, fuzzy matching via stdlib `difflib` not `python-Levenshtein`, reuses `tokenize_selector()`) and `phoenix/ai/policy_only_provider.py` (`ACTIONABILITY`/`VISIBLE`, promotes `actionability_policy.py`'s own evidence rule to be the decision-maker). Caught a real bug via its own test suite before any live use: an earlier version multiplied similarity by attribute weight, which let a low-weight attribute (`id`) mathematically fail the match threshold even on a PERFECT textual match — fixed by using weight only as a tiny tie-break nudge, never a discount on similarity itself. 16 new unit tests, 150/150 full suite, pyflakes clean. **Not yet run as an actual comparison against `llama3.2`** — this is the implementation, not the benchmark result itself; see `LEARNINGS.md` "[Implementation] Both baseline providers built"
 - Sprint 8 comparison tooling: DONE — `scripts/compare_baselines.py`, a standalone (non-pytest, non-CI) script that triggers a real Playwright failure, collects ONE shared `HealingContext`, and runs both the baseline provider and `OllamaProvider` against it for a fair side-by-side. Caught a real bug via its own test suite before any live run: `baseline_provider` was derived from `type(action).__module__`, identical for both baseline providers since that's just where the dataclasses live — fixed with an explicit, independently-tested mapping dict. 13 new unit tests (mocked, no live browser), 163/163 full suite, pyflakes clean. **The actual live run — pointing this at a real Chaos App + Ollama — has still not happened.** See `LEARNINGS.md` "[Implementation] Comparison script built"
+- Sprint 8 narrow baseline slice: COMPLETE — all three planned live comparisons run (`locator_resolution` n=3, `visible_permanent` n=1, `visible_transient` n=1). Baseline provider matched `llama3.2` exactly, 5/5, always at higher confidence and zero cost/latency vs. `llama3.2`'s real token cost and 5.4–15.8s per call. Two real bugs caught live along the way: a `chaos_app/.env` config gotcha (testing `ACTIONABILITY` against a fixed selector requires `selector_rotation` forced OFF, or the failure misclassifies as `LOCATOR_RESOLUTION` before the actionability mechanism ever matters — now documented in `docs/known-limitations.md`), and a real `compare_baselines.py` bug (`ActionabilityReason`/`ActionabilityStrategyKind` Enum fields not JSON-serializable via plain `json.dumps()` — fixed with a `_json_default()` handler, 3 regression tests, 166/166 full suite). **Open decision for next session, not yet made:** whether this 5/5 result — explicitly the simplest tested case of each category per Gap #15 Threat 2 — is sufficient to move to narrow `VISIBLE` execution (Option A, narrowed), or whether `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` (untested, could produce a genuine near-tie) should be checked first. See `LEARNINGS.md` "[Conclusion] Sprint 8's narrow baseline slice — all three planned comparisons done"
