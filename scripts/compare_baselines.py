@@ -57,6 +57,7 @@ import argparse
 import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+from enum import Enum
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -152,6 +153,26 @@ def _check_selector_resolves_live(page, selector: str) -> bool:
         return False
 
 
+def _json_default(obj):
+    """
+    json.dumps()'s fallback for anything it doesn't know how to
+    serialize natively. ActionabilityStrategy's `reason` and `strategy`
+    fields are Enum members (ActionabilityReason,
+    ActionabilityStrategyKind) — dataclasses.asdict() does NOT convert
+    nested Enum values the way it does nested dataclasses, so they
+    reach json.dumps() as raw Enum instances and crash it. Caught live:
+    the FIRST visible_permanent run printed a correct result to the
+    terminal and then crashed trying to persist that exact result to
+    baseline_comparison_results.jsonl — the record was correct, only
+    the file write failed. Serializes an Enum to its `.value` (e.g.
+    "no_safe_recovery"), not its repr, so the JSONL stays as readable
+    as decision_logger.py's own log.
+    """
+    if isinstance(obj, Enum):
+        return obj.value
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
 def _action_to_dict(action) -> dict:
     return asdict(action) if is_dataclass(action) else {"repr": repr(action)}
 
@@ -244,7 +265,7 @@ def main():
         for i in range(1, args.runs + 1):
             record = _run_once(args.scenario, i, args.headed)
             _print_record(record)
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
 
     print(f"\nAppended {args.runs} record(s) to {RESULTS_PATH}.")
 

@@ -14,18 +14,59 @@ App/Ollama available in that environment) — these tests are the actual
 verification that exists for its logic, not a substitute for the real
 comparison run.
 """
+import json
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
 
+from phoenix.collector.failure_classifier import ActionabilityReason
 from phoenix.healing.actions import ActionabilityStrategyKind
 from scripts.compare_baselines import (
     _BASELINE_PROVIDER_NAME,
     _EXPECTED_STRATEGY,
     _action_to_dict,
     _check_selector_resolves_live,
+    _json_default,
 )
+
+
+@pytest.mark.unit
+class TestJsonDefault:
+    def test_enum_serializes_to_its_value_not_its_repr(self):
+        # Regression guard: the first live visible_permanent run printed
+        # a CORRECT result to the terminal, then crashed persisting that
+        # exact result — dataclasses.asdict() does not convert nested
+        # Enum fields (ActionabilityStrategy.reason/.strategy) the way
+        # it converts nested dataclasses, so json.dumps() received a raw
+        # Enum instance and raised TypeError.
+        assert _json_default(ActionabilityStrategyKind.WAIT_AND_RETRY) == "wait_and_retry"
+        assert _json_default(ActionabilityStrategyKind.NO_SAFE_RECOVERY) == "no_safe_recovery"
+
+    def test_still_raises_for_a_genuinely_unknown_type(self):
+        # Must stay a real fallback, not a silent catch-all — an object
+        # that ISN'T an Enum and isn't otherwise serializable should
+        # still fail loudly, same as json.dumps()'s default behavior.
+        class Unserializable:
+            pass
+
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            _json_default(Unserializable())
+
+    def test_full_record_with_enum_fields_round_trips_through_json_dumps(self):
+        # End-to-end check of the actual failure mode: a dict shaped
+        # like what _run_once() builds, containing raw Enum values
+        # (as asdict() would actually produce), must survive
+        # json.dumps(..., default=_json_default) without raising.
+        record = {
+            "baseline_action": {
+                "reason": ActionabilityReason.VISIBLE,
+                "strategy": ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+            }
+        }
+        serialized = json.dumps(record, default=_json_default)
+        assert '"reason": "visible"' in serialized
+        assert '"strategy": "no_safe_recovery"' in serialized
 
 
 @pytest.mark.unit

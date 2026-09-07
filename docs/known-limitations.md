@@ -163,6 +163,26 @@ boundary, just an incomplete-coverage one:
   `VITE_COMPONENT_REMOUNT_ENABLED`). When something "should have
   changed" but the app's behavior didn't, check the actual gitignored
   `.env` file directly before suspecting the code.
+- **Testing an `ACTIONABILITY` scenario against a FIXED selector
+  requires `selector_rotation` to be explicitly forced OFF via
+  `VITE_OVERRIDE_SELECTOR_ROTATION=false`** — leaving `VITE_CHAOS_LEVEL`
+  at any of `LOW`/`MEDIUM`/`HIGH` (all three include `selector_rotation`)
+  means the target field's fixed `data-testid` never resolves AT ALL,
+  regardless of the actionability mechanism (`visibilityDelay.jsx`,
+  `pointerEventsOverlay.jsx`) also being active. Per
+  `failure_classifier.py`'s `parse_playwright_call_log()`: no `"locator
+  resolved to"` marker anywhere in Playwright's message means
+  `LOCATOR_RESOLUTION`, unconditionally — the visibility/pointer-events
+  mechanism never even gets a chance to matter, and
+  `PolicyOnlyProvider`/`OllamaProvider`'s actionability path is never
+  reached. Caught live (Sprint 8): a `visible_permanent` run raised
+  `PolicyOnlyProvider`'s own `NotImplementedError` for
+  `category=LOCATOR_RESOLUTION` immediately after a `locator_resolution`
+  scenario run had (correctly) required the OPPOSITE override state —
+  the two scenarios need genuinely different `.env` configs, not just
+  different `VITE_VISIBILITY_DELAY_MODE` values. See `LEARNINGS.md`
+  "Sprint 8 (pre-coding)" verification entries for the exact configs
+  used for each scenario.
 
 ## Where to read more
 Search `LEARNINGS.md` for the relevant heading phrasing above (e.g.

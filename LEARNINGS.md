@@ -4640,7 +4640,67 @@ correctness, lower confidence, real cost, real latency.
 **Not yet run:** `visible_permanent`/`visible_transient` (planned for
 the next session) — this entry covers `locator_resolution` only.
 
+### [Verification] Second live comparison run — `visible_permanent`, n=1
+
+Ran `python -m scripts.compare_baselines --scenario visible_permanent
+--runs 1` against a real Chaos App and real Ollama (`llama3.2`).
+
+**First attempt failed before producing a comparison at all** —
+`PolicyOnlyProvider` raised its own `NotImplementedError` for
+`category=FailureCategory.LOCATOR_RESOLUTION`. Root cause: `chaos_app/.env`
+still had `VITE_CHAOS_LEVEL=LOW` left over from the `locator_resolution`
+run, with `selector_rotation` active and no override — meaning the
+FIXED `[data-testid='password']` selector never resolved at all, for
+reasons having nothing to do with `visibilityDelay.jsx`.
+`parse_playwright_call_log()` correctly classified this as
+`LOCATOR_RESOLUTION` (no `"locator resolved to"` marker in Playwright's
+message, full stop) — the actionability mechanism never got a chance to
+matter. Fixed by explicitly forcing `VITE_OVERRIDE_SELECTOR_ROTATION=false`
+and `VITE_OVERRIDE_DOM_MUTATION=false` (the OPPOSITE override state
+needed for `locator_resolution`) alongside `VITE_VISIBILITY_DELAY_MODE=permanent`.
+Documented as a named environment gotcha in `docs/known-limitations.md`
+— exactly the kind of thing that's obvious once found and easy to
+re-trip on next time without a written note.
+
+**Second attempt produced a correct comparison result, then crashed on
+persistence.** Both providers printed to the terminal correctly:
+
+| | `PolicyOnlyProvider` | `llama3.2` |
+|---|---|---|
+| Correct | True (`NO_SAFE_RECOVERY`, matching ground truth) | True (`NO_SAFE_RECOVERY`) |
+| Confidence | 1.0 | 0.8 |
+| Cost | 0 | 1742 in / 69 out tokens |
+| Latency | negligible | 11609ms |
+
+But `json.dumps()` then raised `TypeError: Object of type
+ActionabilityReason is not JSON serializable` trying to append this
+exact (correct) record to `baseline_comparison_results.jsonl` — the
+result reached the terminal but was never persisted. Root cause:
+`dataclasses.asdict()` converts nested DATACLASSES recursively but does
+NOT convert nested Enum fields — `ActionabilityStrategy.reason`/
+`.strategy` reached `json.dumps()` as raw `ActionabilityReason`/
+`ActionabilityStrategyKind` instances. Fixed with a `_json_default()`
+handler (`isinstance(obj, Enum): return obj.value`) passed as
+`json.dumps(..., default=_json_default)` — serializes to the same
+`.value` string `decision_logger.py`'s own JSON-lines log already uses
+for its `failure_type` field, not a repr. Still raises `TypeError` for
+anything that ISN'T an Enum, same as `json.dumps()`'s own default
+behavior — not a silent catch-all. Three new regression tests
+(`test_compare_baselines.py::TestJsonDefault`), 166/166 full suite,
+pyflakes clean.
+
+**This same result — `NO_SAFE_RECOVERY` correctly identified by both
+providers at zero-vs-nonzero cost — is now the SECOND data point
+pointing the same direction as `locator_resolution`'s.** Same caveat
+as before applies with equal force here, per Gap #15 Threat 2:
+`visible_permanent` is the CLEANEST possible instance of this failure
+category (never changes, ever) — the harder question is
+`visible_transient`, still pending, where the correct answer requires
+recognizing that a change DID happen within the observation window,
+not just that nothing changed.
+
 ### [Follow-up] Remaining next steps
+
 
 
 
@@ -4650,13 +4710,16 @@ the next session) — this entry covers `locator_resolution` only.
   DONE, see [Implementation] above
 - ~~Build a comparison script~~ — DONE, see `scripts/compare_baselines.py`
   and the [Implementation] entry above
-- ~~Actually RUN `scripts/compare_baselines.py` for `locator_resolution`~~
-  — DONE (n=3, `HeuristicProvider` matched `llama3.2` exactly), see
-  [Verification] above. **`visible_permanent`/`visible_transient` still
-  not run** — planned for the next session, no new Chaos App mechanism
-  needed (`visibilityDelay.jsx` already exists)
-- Decide, based on what all three comparisons actually show (one down,
-  two to go), whether Sprint 8 continues toward the full multi-level
+- ~~Actually RUN `scripts/compare_baselines.py` for `locator_resolution`
+  and `visible_permanent`~~ — BOTH DONE (see [Verification] entries
+  above): `locator_resolution` n=3, `HeuristicProvider` matched
+  `llama3.2` exactly; `visible_permanent` n=1, `PolicyOnlyProvider`
+  matched `llama3.2` exactly (`NO_SAFE_RECOVERY`, correct). **`visible_transient`
+  still not run** — the one remaining scenario, and arguably the most
+  informative one: it's the only case where the correct answer requires
+  recognizing a CHANGE happened, not just confirming nothing did
+- Decide, based on what all three comparisons actually show (two down,
+  one to go), whether Sprint 8 continues toward the full multi-level
   benchmark runner, or whether the result is conclusive enough at small
   scale to move directly to narrow `VISIBLE` execution (Option A,
   narrowed) instead
