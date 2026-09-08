@@ -4824,7 +4824,48 @@ mechanism `HIGH` adds over `MEDIUM`) only affects `AddItemForm`, never
 architecturally identical to `MEDIUM` — no new information, not worth
 the run.
 
+### [Decision] `ticket_row_ambiguity` deprioritized — Gap #16 (NEW), moving to Option A next
+
+Investigated before writing any code, per this project's own "vertical
+slice sequencing" habit — check the target exists before building
+toward it. Two findings, surfaced in this order:
+
+**Finding 1 — `TicketList`'s rows are outside `LocatorResolutionCollector`'s
+scan scope entirely.** `_SCORE_CANDIDATES_JS`'s
+`document.querySelectorAll('input, button, select, textarea, label, a, [role]')`
+does not match a plain `<tr>` (no `role` attribute set in
+`TicketList.jsx`). A broken row selector would produce ZERO scoring
+candidates — `dom_snapshot` would be the empty-result comment, not a
+near-tie. This is a real, previously-undocumented scope boundary of
+`LocatorResolutionCollector` in its own right, independent of anything
+about baseline comparison — filed as **Gap #16**.
+
+**Finding 2 — even with that scope fixed, `TicketList`'s rotation
+design wouldn't produce a genuine near-tie anyway.**
+`rotateSelector(`ticket-row-${id}`, ...)` rotates the WHOLE
+ticket-specific logical name (`"ticket-row-TCK-001"`), not a shared
+base name — so `tokenize_selector()` on each row's post-rotation
+`data-testid` yields ticket-ID-specific tokens, not identical ones
+across rows. "Structurally identical HTML" (the property `TicketList`
+actually has, and the one the Sprint 3 `outerHTML`-collision TODO is
+about) is NOT the same property as "tokenwise ambiguous" (what a
+near-tie test for `HeuristicProvider` actually needs) — these got
+conflated in the original idea from the previous session.
+
+**Decision, per direct discussion: do not pursue further.** Fixing the
+scan scope AND redesigning a chaos mechanism to produce genuine
+token-level ties would both be real production-code changes, built
+solely to serve one comparison test — judged not worth it against
+Sprint 8's already-solid 8/8 evidence across two chaos levels. Moving
+to **Option A, narrowed** (building `Healer` support for an approved
+`ActionabilityStrategy`, scoped to `VISIBLE` only) as the next concrete
+piece of work instead. The near-tie question stays open (Gap #16) —
+revisit only if a real usage case surfaces one that actually matters,
+not as a standalone research detour.
+
 ### [Follow-up] Remaining next steps
+
+
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
   [Implementation] above
@@ -4847,20 +4888,22 @@ the run.
   `HeuristicProvider`'s confidence varying with `selectorRotation.js`'s
   suffix randomness (see that entry). `HIGH` skipped as redundant —
   `async_delay` never touches `LoginForm`
-- **New candidate for a genuine near-tie test, not yet built:**
-  `TicketList`'s three structurally identical rows (`TCK-001/002/003`)
-  — a real place multiple similarly-shaped candidates could make
-  `HeuristicProvider`'s weight-based tie-break diverge from an LLM's
-  semantic reasoning, unlike `dom_mutation` on the login form.
-  `compare_baselines.py` only targets the login form today — a fourth
-  scenario (`ticket_row_ambiguity` or similar) would need a new
-  `_trigger_failure()` branch, not just a `.env` change. Not started
-- **Open decision for the next session:** whether the growing baseline
-  evidence (now 8/8 across two chaos levels, one failure category) is
-  sufficient basis to move to narrow `VISIBLE` execution (Option A,
-  narrowed — building `Healer` support for an approved
-  `ActionabilityStrategy`) next, or whether the `TicketList` near-tie
-  test above should be built first. Not decided here
+- ~~New candidate for a genuine near-tie test: `TicketList`'s rows~~ —
+  INVESTIGATED, DEPRIORITIZED (Gap #16). Two blockers found: rows are
+  outside `LocatorResolutionCollector`'s scan scope entirely (`<tr>`
+  doesn't match `input, button, select, textarea, label, a, [role]`),
+  AND even with scope fixed, the rotation design wouldn't produce a
+  genuine tokenwise tie (each row's rotated name is ticket-ID-specific,
+  not shared). Not pursued further — would require production-code
+  changes solely to serve one comparison test. See [Decision]
+  `ticket_row_ambiguity` deprioritized" above
+- **Decided: moving to Option A, narrowed** — `Healer` support for
+  executing an approved `ActionabilityStrategy`, scoped to `VISIBLE`
+  only (`RECEIVES_EVENTS` stays proposal-only for now). Next concrete
+  design step: how `Healer.attempt_heal()` — which today returns a bare
+  healed-selector string — accommodates "wait N ms then retry the SAME
+  original action" as a genuinely different return shape/flow than a
+  selector swap. Not designed yet
 
 ---
 
@@ -4928,3 +4971,4 @@ the run.
 - Sprint 8 comparison tooling: DONE — `scripts/compare_baselines.py`, a standalone (non-pytest, non-CI) script that triggers a real Playwright failure, collects ONE shared `HealingContext`, and runs both the baseline provider and `OllamaProvider` against it for a fair side-by-side. Caught a real bug via its own test suite before any live run: `baseline_provider` was derived from `type(action).__module__`, identical for both baseline providers since that's just where the dataclasses live — fixed with an explicit, independently-tested mapping dict. 13 new unit tests (mocked, no live browser), 163/163 full suite, pyflakes clean. **The actual live run — pointing this at a real Chaos App + Ollama — has still not happened.** See `LEARNINGS.md` "[Implementation] Comparison script built"
 - Sprint 8 narrow baseline slice: COMPLETE — all three planned live comparisons run (`locator_resolution` n=3, `visible_permanent` n=1, `visible_transient` n=1). Baseline provider matched `llama3.2` exactly, 5/5, always at higher confidence and zero cost/latency vs. `llama3.2`'s real token cost and 5.4–15.8s per call. Two real bugs caught live along the way: a `chaos_app/.env` config gotcha (testing `ACTIONABILITY` against a fixed selector requires `selector_rotation` forced OFF, or the failure misclassifies as `LOCATOR_RESOLUTION` before the actionability mechanism ever matters — now documented in `docs/known-limitations.md`), and a real `compare_baselines.py` bug (`ActionabilityReason`/`ActionabilityStrategyKind` Enum fields not JSON-serializable via plain `json.dumps()` — fixed with a `_json_default()` handler, 3 regression tests, 166/166 full suite). **Open decision for next session, not yet made:** whether this 5/5 result — explicitly the simplest tested case of each category per Gap #15 Threat 2 — is sufficient to move to narrow `VISIBLE` execution (Option A, narrowed), or whether `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` (untested, could produce a genuine near-tie) should be checked first. See `LEARNINGS.md` "[Conclusion] Sprint 8's narrow baseline slice — all three planned comparisons done"
 - Sprint 8 `MEDIUM`-level check: DONE — `locator_resolution` re-run at `VITE_CHAOS_LEVEL=MEDIUM` (`dom_mutation` active), n=3, still 3/3 — baseline now 8/8 total across `LOW`+`MEDIUM`. Confirmed `dom_mutation` tests landmark-walk robustness, not candidate ambiguity, as predicted — no near-tie surfaced. Incidental real finding: `HeuristicProvider` confidence varies (0.76 vs 1.00) depending on whether `selectorRotation.js`'s random suffix happens to contain a digit (`tokenize_selector()`'s rotation-suffix regex only strips suffixes with ≥1 digit, by deliberate Sprint 2 design) — did not affect correctness in any sample, but is a real, now-documented source of confidence variance. `HIGH` skipped as redundant (`async_delay` never touches `LoginForm`). **New idea, not yet built:** a `ticket_row_ambiguity` scenario against `TicketList`'s 3 structurally-identical rows — a genuine near-tie candidate, unlike `dom_mutation`. See `LEARNINGS.md` "[Verification] Fourth live comparison run"
+- Gap #16 (NEW): `ticket_row_ambiguity` investigated and deprioritized — `LocatorResolutionCollector`'s candidate scan doesn't match `<tr>` at all (outside its `input, button, select, textarea, label, a, [role]` scope), and even fixed, `TicketList`'s rotation design wouldn't produce a genuine tokenwise tie (each row's rotated name stays ticket-ID-specific). Decided NOT to pursue — would need production-code changes solely to serve one test. **Moving to Option A, narrowed: `Healer` execution support for an approved `ActionabilityStrategy`, scoped to `VISIBLE` only** — next concrete design step, not yet started. See `LEARNINGS.md` "[Decision] `ticket_row_ambiguity` deprioritized"
