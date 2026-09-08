@@ -4760,6 +4760,70 @@ more baseline evidence is enough before spending effort on execution,
 not something this result settles by itself. Decision for the next
 session, not made here.
 
+### [Verification] Fourth live comparison run — `locator_resolution` on `MEDIUM`, n=3
+
+Ran `python -m scripts.compare_baselines --scenario locator_resolution
+--runs 3` at `VITE_CHAOS_LEVEL=MEDIUM` (`selector_rotation` +
+`dom_mutation`, both explicitly forced on via override rather than
+relying on the level default alone — see `docs/known-limitations.md`'s
+override gotcha, applied proactively this time instead of re-discovered
+the hard way). Motivation, per direct discussion: `LOW`'s n=3 was
+explicitly caveated (Gap #15 Threat 2) as the SIMPLEST possible
+`LOCATOR_RESOLUTION` case; `MEDIUM` adds `dom_mutation` as the next
+cheapest thing to test before deciding what's next for Sprint 8.
+
+**Result: `HeuristicProvider` still matched `llama3.2` exactly, 3/3.**
+Combined with `LOW`'s n=3, the baseline now stands at **8/8 total**
+across both chaos levels.
+
+**But a real, unrelated finding surfaced along the way — NOT a
+`dom_mutation` effect.** Two of three runs showed `HeuristicProvider`
+confidence at `0.76`, not the `1.00` seen consistently at `LOW`.
+Verified directly: `selectorRotation.js`'s `randomSuffix()`
+(`Math.random().toString(36).slice(2, 6)`) occasionally produces a
+4-char suffix with NO digits at all (`iuay`, `hrjf` — pure letters).
+`tokenize_selector()`'s rotation-suffix regex deliberately requires at
+least one digit before treating a suffix as noise (a Sprint 2 decision,
+to avoid false-stripping real 4-letter words like "form") — so an
+all-letter suffix is NOT stripped, and `SequenceMatcher` then compares
+`"username"` against the UNSTRIPPED `"username-iuay"`, landing at
+~0.76 instead of a clean 1.0. Confirmed directly:
+`tokenize_selector("username-8i8d")` → `["username"]` (has a digit,
+stripped) vs. `tokenize_selector("username-iuay")` →
+`["username", "iuay"]` (no digit, kept).
+
+This is a property of `selectorRotation.js`'s base36 suffix generator
+interacting with `tokenize_selector()`'s existing, deliberate design —
+NOT something `MEDIUM`/`dom_mutation` introduced. It could equally have
+happened at `LOW`; Sprint 8's original `LOW` n=3 simply got lucky (all
+three sampled suffixes happened to contain a digit). Confidence varying
+this way did NOT affect correctness in any of these 8 samples — 0.76
+still clears `_MIN_SIMILARITY=0.5` — but it's a real, now-documented
+source of variance in `HeuristicProvider`'s reported confidence that
+wasn't visible in the smaller `LOW` sample. Not treated as a bug: the
+underlying regex behavior is a deliberate, already-justified Sprint 2
+decision; flagging it here is about `HeuristicProvider`'s confidence
+number being noisier than an n=3 sample first suggested, not about
+anything being wrong.
+
+No `dom_mutation`-specific effect observed — the landmark-walk step
+(`_FIND_LANDMARK_JS`'s `closest('form, section, [role]')`) handled the
+wrapped/retagged/unwrapped structure across all three runs without
+issue, consistent with the prediction that `dom_mutation` tests
+landmark robustness, not candidate ambiguity (see direct discussion:
+`dom_mutation` restructures the form's ancestry, it doesn't create new
+similarly-named candidate elements — `TicketList`'s three structurally
+identical rows remain the more likely place to find a genuine near-tie,
+not yet tested; `compare_baselines.py` only targets the login form
+today).
+
+`HIGH` deliberately skipped for this scenario — `async_delay` (the only
+mechanism `HIGH` adds over `MEDIUM`) only affects `AddItemForm`, never
+`LoginForm` (verified: `useChaosDelay`/`async_delay` appears in
+`AddItemForm.jsx` only). Running `HIGH` against the login form would be
+architecturally identical to `MEDIUM` — no new information, not worth
+the run.
+
 ### [Follow-up] Remaining next steps
 
 - ~~Implement `HeuristicProvider` for `LOCATOR_RESOLUTION`~~ — DONE, see
@@ -4774,17 +4838,29 @@ session, not made here.
   `visible_transient` n=1 — baseline matched `llama3.2` 5/5, always at
   higher confidence, zero cost, and negligible latency vs. `llama3.2`'s
   real token cost and 5.4–15.8s per call. Narrow slice complete
-- **Open decision for the next session:** whether this 5/5 result
-  (explicitly the SIMPLEST tested case of each category, per Gap #15
-  Threat 2) is sufficient basis to move to narrow `VISIBLE` execution
-  next (Option A, narrowed — building `Healer` support for an approved
-  `ActionabilityStrategy`), or whether it's worth first testing
-  `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` active —
-  the one untested case where a genuine near-tie between
-  structurally-similar candidates could make `HeuristicProvider`'s
-  weight-based tie-break diverge from an LLM's semantic reasoning. Not
-  decided here — see [Conclusion] above for the full reasoning either
-  way
+- ~~Test `locator_resolution` at `MEDIUM` (`dom_mutation` active)~~ —
+  DONE, see [Verification] "Fourth live comparison run" above: still
+  3/3, baseline now 8/8 total. `dom_mutation` did not surface a
+  near-tie (confirmed it tests landmark-walk robustness, not candidate
+  ambiguity, as predicted in direct discussion) — but the run
+  incidentally surfaced a real, unrelated finding about
+  `HeuristicProvider`'s confidence varying with `selectorRotation.js`'s
+  suffix randomness (see that entry). `HIGH` skipped as redundant —
+  `async_delay` never touches `LoginForm`
+- **New candidate for a genuine near-tie test, not yet built:**
+  `TicketList`'s three structurally identical rows (`TCK-001/002/003`)
+  — a real place multiple similarly-shaped candidates could make
+  `HeuristicProvider`'s weight-based tie-break diverge from an LLM's
+  semantic reasoning, unlike `dom_mutation` on the login form.
+  `compare_baselines.py` only targets the login form today — a fourth
+  scenario (`ticket_row_ambiguity` or similar) would need a new
+  `_trigger_failure()` branch, not just a `.env` change. Not started
+- **Open decision for the next session:** whether the growing baseline
+  evidence (now 8/8 across two chaos levels, one failure category) is
+  sufficient basis to move to narrow `VISIBLE` execution (Option A,
+  narrowed — building `Healer` support for an approved
+  `ActionabilityStrategy`) next, or whether the `TicketList` near-tie
+  test above should be built first. Not decided here
 
 ---
 
@@ -4851,3 +4927,4 @@ session, not made here.
 - Sprint 8 implementation: DONE (both baseline providers) — `phoenix/ai/heuristic_provider.py` (`LOCATOR_RESOLUTION`, fuzzy matching via stdlib `difflib` not `python-Levenshtein`, reuses `tokenize_selector()`) and `phoenix/ai/policy_only_provider.py` (`ACTIONABILITY`/`VISIBLE`, promotes `actionability_policy.py`'s own evidence rule to be the decision-maker). Caught a real bug via its own test suite before any live use: an earlier version multiplied similarity by attribute weight, which let a low-weight attribute (`id`) mathematically fail the match threshold even on a PERFECT textual match — fixed by using weight only as a tiny tie-break nudge, never a discount on similarity itself. 16 new unit tests, 150/150 full suite, pyflakes clean. **Not yet run as an actual comparison against `llama3.2`** — this is the implementation, not the benchmark result itself; see `LEARNINGS.md` "[Implementation] Both baseline providers built"
 - Sprint 8 comparison tooling: DONE — `scripts/compare_baselines.py`, a standalone (non-pytest, non-CI) script that triggers a real Playwright failure, collects ONE shared `HealingContext`, and runs both the baseline provider and `OllamaProvider` against it for a fair side-by-side. Caught a real bug via its own test suite before any live run: `baseline_provider` was derived from `type(action).__module__`, identical for both baseline providers since that's just where the dataclasses live — fixed with an explicit, independently-tested mapping dict. 13 new unit tests (mocked, no live browser), 163/163 full suite, pyflakes clean. **The actual live run — pointing this at a real Chaos App + Ollama — has still not happened.** See `LEARNINGS.md` "[Implementation] Comparison script built"
 - Sprint 8 narrow baseline slice: COMPLETE — all three planned live comparisons run (`locator_resolution` n=3, `visible_permanent` n=1, `visible_transient` n=1). Baseline provider matched `llama3.2` exactly, 5/5, always at higher confidence and zero cost/latency vs. `llama3.2`'s real token cost and 5.4–15.8s per call. Two real bugs caught live along the way: a `chaos_app/.env` config gotcha (testing `ACTIONABILITY` against a fixed selector requires `selector_rotation` forced OFF, or the failure misclassifies as `LOCATOR_RESOLUTION` before the actionability mechanism ever matters — now documented in `docs/known-limitations.md`), and a real `compare_baselines.py` bug (`ActionabilityReason`/`ActionabilityStrategyKind` Enum fields not JSON-serializable via plain `json.dumps()` — fixed with a `_json_default()` handler, 3 regression tests, 166/166 full suite). **Open decision for next session, not yet made:** whether this 5/5 result — explicitly the simplest tested case of each category per Gap #15 Threat 2 — is sufficient to move to narrow `VISIBLE` execution (Option A, narrowed), or whether `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` (untested, could produce a genuine near-tie) should be checked first. See `LEARNINGS.md` "[Conclusion] Sprint 8's narrow baseline slice — all three planned comparisons done"
+- Sprint 8 `MEDIUM`-level check: DONE — `locator_resolution` re-run at `VITE_CHAOS_LEVEL=MEDIUM` (`dom_mutation` active), n=3, still 3/3 — baseline now 8/8 total across `LOW`+`MEDIUM`. Confirmed `dom_mutation` tests landmark-walk robustness, not candidate ambiguity, as predicted — no near-tie surfaced. Incidental real finding: `HeuristicProvider` confidence varies (0.76 vs 1.00) depending on whether `selectorRotation.js`'s random suffix happens to contain a digit (`tokenize_selector()`'s rotation-suffix regex only strips suffixes with ≥1 digit, by deliberate Sprint 2 design) — did not affect correctness in any sample, but is a real, now-documented source of confidence variance. `HIGH` skipped as redundant (`async_delay` never touches `LoginForm`). **New idea, not yet built:** a `ticket_row_ambiguity` scenario against `TicketList`'s 3 structurally-identical rows — a genuine near-tie candidate, unlike `dom_mutation`. See `LEARNINGS.md` "[Verification] Fourth live comparison run"
