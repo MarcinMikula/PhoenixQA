@@ -25,6 +25,20 @@ below (`action.proposed_selector` etc.) is intentionally
 SelectorReplacement-specific for that reason, not written generically —
 generalizing this is a real, future task once ActionabilityStrategy
 actually reaches this function, not something to guess at now.
+
+Sprint 8 (Option A, narrowed) — that future task is now DONE.
+`SelectorReplacement`-specific fields (`proposed_selector`,
+`alternative_selectors`) are read via `getattr(..., default)` instead
+of direct attribute access, since `ActionabilityStrategy` has neither —
+calling this with one before this change would have raised
+`AttributeError`, which is exactly why `Healer` never called it for an
+`ActionabilityStrategy` action before now (it rejected first). New
+optional fields (`strategy`, `suggested_wait_ms`, `blocking_element`,
+`corrected_by_policy`, `original_strategy`, `policy_reason`) surface
+`ActionabilityStrategy`-specific data the same way — `None` for a
+`SelectorReplacement` entry, populated for an `ActionabilityStrategy`
+one, so one log format covers both without either shape needing to
+fake fields it doesn't have.
 """
 import json
 from datetime import datetime, timezone
@@ -76,6 +90,11 @@ def log_decision(
     optional and default to None — Safe Mode call sites that don't have
     ProviderResult timing/token data on hand still log a valid entry,
     just with these fields null rather than fabricated.
+
+    Handles both HealingAction subtypes as of Sprint 8 (Option A,
+    narrowed) — see module docstring for how the SelectorReplacement-
+    specific and ActionabilityStrategy-specific fields coexist in one
+    schema without either faking the other's data.
     """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -86,11 +105,19 @@ def log_decision(
         "actionability_reason": context.actionability_reason.value if context.actionability_reason else None,
         "failure_label": _failure_label(context) if context.category else None,
         "original_code": context.original_code,
-        "proposed_selector": action.proposed_selector,
+        "proposed_selector": getattr(action, "proposed_selector", None),
         "confidence": action.confidence,
         "reasoning": action.reasoning,
-        "alternative_selectors": action.alternative_selectors,
+        "alternative_selectors": getattr(action, "alternative_selectors", None),
         "raw_response": action.raw_response,
+        "strategy": getattr(action, "strategy", None) and action.strategy.value,
+        "suggested_wait_ms": getattr(action, "suggested_wait_ms", None),
+        "blocking_element": getattr(action, "blocking_element", None),
+        "corrected_by_policy": getattr(action, "corrected_by_policy", None),
+        "original_strategy": (
+            getattr(action, "original_strategy", None) and action.original_strategy.value
+        ),
+        "policy_reason": getattr(action, "policy_reason", None),
         "accepted": accepted,
         "mode": mode,
         "provider": provider,

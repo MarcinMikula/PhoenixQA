@@ -15,7 +15,7 @@ import json
 import pytest
 
 from phoenix.ai.base_provider import HealingContext
-from phoenix.healing.actions import SelectorReplacement
+from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind, SelectorReplacement
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.decision_logger import log_decision
 
@@ -149,3 +149,97 @@ class TestLogDecision:
 
         entry = json.loads(log_path.read_text(encoding="utf-8").strip())
         assert entry["mode"] == "safe"
+
+
+@pytest.mark.unit
+class TestLogDecisionActionabilityStrategy:
+    """
+    Sprint 8 (Option A, narrowed). Before this, log_decision() would
+    have raised AttributeError on action.proposed_selector for an
+    ActionabilityStrategy — Healer never called it with one, since it
+    rejected before reaching this function. Now that VISIBLE execution
+    calls it directly, log_decision() must handle both HealingAction
+    shapes in one schema without crashing on either.
+    """
+
+    def test_actionability_strategy_does_not_crash_and_has_null_selector_fields(self, tmp_path):
+        log_path = tmp_path / "healing_decisions.log"
+        action = ActionabilityStrategy(
+            confidence=0.95,
+            reasoning="state changed during observation",
+            reason=ActionabilityReason.VISIBLE,
+            strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+            suggested_wait_ms=1200,
+        )
+        # The real assertion here is simply that this does not raise.
+        log_decision(_sample_actionability_context(), action, accepted=True, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["proposed_selector"] is None
+        assert entry["alternative_selectors"] is None
+
+    def test_actionability_strategy_fields_are_captured(self, tmp_path):
+        log_path = tmp_path / "healing_decisions.log"
+        action = ActionabilityStrategy(
+            confidence=0.95,
+            reasoning="state changed during observation",
+            reason=ActionabilityReason.VISIBLE,
+            strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+            suggested_wait_ms=1200,
+        )
+        log_decision(_sample_actionability_context(), action, accepted=True, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["strategy"] == "wait_and_retry"
+        assert entry["suggested_wait_ms"] == 1200
+
+    def test_policy_correction_fields_are_captured_when_set(self, tmp_path):
+        # actionability_policy.py's correction — a human or dashboard
+        # reader needs to see "the model said X, policy corrected to Y,
+        # because Z" from the log itself, not just from a live terminal
+        # session that already scrolled away.
+        log_path = tmp_path / "healing_decisions.log"
+        action = ActionabilityStrategy(
+            confidence=0.8,
+            reasoning="animation-name declared on the target",
+            reason=ActionabilityReason.RECEIVES_EVENTS,
+            strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+            corrected_by_policy=True,
+            original_strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+            policy_reason="no animation/transition evidence in collector_metadata",
+        )
+        log_decision(_sample_actionability_context(), action, accepted=False, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["corrected_by_policy"] is True
+        assert entry["original_strategy"] == "wait_and_retry"
+        assert entry["strategy"] == "no_safe_recovery"
+        assert "no animation" in entry["policy_reason"]
+
+    def test_uncorrected_actionability_strategy_has_null_correction_fields(self, tmp_path):
+        # Default case (no policy intervention needed) must not
+        # fabricate correction data — None, not "false"-shaped noise.
+        log_path = tmp_path / "healing_decisions.log"
+        action = ActionabilityStrategy(
+            confidence=1.0,
+            reasoning="state never changed",
+            reason=ActionabilityReason.VISIBLE,
+            strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+        )
+        log_decision(_sample_actionability_context(), action, accepted=False, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["corrected_by_policy"] is False
+        assert entry["original_strategy"] is None
+        assert entry["policy_reason"] is None
+
+    def test_selector_replacement_still_has_null_actionability_fields(self, tmp_path):
+        # Symmetric regression guard: a SelectorReplacement entry must
+        # not fabricate actionability-shaped data either.
+        log_path = tmp_path / "healing_decisions.log"
+        log_decision(_sample_context(), _sample_proposal(), accepted=True, log_path=str(log_path))
+
+        entry = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert entry["strategy"] is None
+        assert entry["suggested_wait_ms"] is None
+        assert entry["corrected_by_policy"] is None

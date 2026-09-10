@@ -34,16 +34,46 @@ and `_attempt_heal_autonomous` reject any non-`SelectorReplacement`
 action rather than assuming one — deliberate, not an oversight: nothing
 in `Healer` yet knows how to retry a wait/dismiss strategy the way it
 knows how to retry a healed selector.
+
+Sprint 8 (Option A, narrowed) — that changes for ONE case:
+`ActionabilityReason.VISIBLE`, and only its two prompt-restricted
+strategies (`WAIT_AND_RETRY`/`NO_SAFE_RECOVERY`; see
+`phoenix/ai/prompts/visible_prompt.py`). Decided per direct discussion,
+after Sprint 8's baseline comparison held at 8/8 and a genuine near-tie
+test (`ticket_row_ambiguity`, Gap #16) was investigated and
+deprioritized as not worth pursuing further right now. Deliberately
+narrow: `RECEIVES_EVENTS` is UNCHANGED, still rejected outright — this
+is not a general "Healer now executes actionability strategies"
+change. `attempt_heal()`'s return contract stays a bare selector string
+(no `BasePage` changes): for `WAIT_AND_RETRY`, `Healer` waits
+internally (`page.wait_for_timeout()`, capped at
+`MAX_ACTIONABILITY_WAIT_MS`) and returns the ORIGINAL, unchanged
+`broken_selector` — the selector was never the problem, so there is no
+new one to substitute; `BasePage`'s existing single retry call picks up
+from there unmodified. For `NO_SAFE_RECOVERY`, there is nothing to
+retry — raises `HealingRejectedError`, same exception family as every
+other declined fix.
 """
 from playwright.sync_api import Page
 
 from config.settings import Settings
 from phoenix.ai.provider_factory import get_provider
 from phoenix.collector.context_collector import ContextCollector
-from phoenix.healing.actions import SelectorReplacement
+from phoenix.collector.failure_classifier import ActionabilityReason
+from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind, SelectorReplacement
 from phoenix.healing.autonomous_policy import AutonomousPolicy, HealingBudget, HealLifecycleTimer
 from phoenix.healing.decision_logger import log_decision
-from phoenix.healing.safe_mode import request_human_review
+from phoenix.healing.safe_mode import request_human_review, request_human_review_actionability
+
+# Sprint 8 (Option A, narrowed) tuning constants. A malformed or
+# hallucinated suggested_wait_ms from the LLM must not become an
+# unbounded sleep — this is the same "name the stop condition
+# explicitly" discipline as AutonomousPolicy's other limits (see
+# LEARNINGS.md Gap #10). Sprint 6B's live-verified VISIBLE ground-truth
+# scenarios used 1200ms; 5000ms is a generous but bounded ceiling above
+# that, not a guess.
+MAX_ACTIONABILITY_WAIT_MS = 5000
+DEFAULT_ACTIONABILITY_WAIT_MS = 1000  # used when suggested_wait_ms is missing/non-positive
 
 
 class HealingRejectedError(Exception):
@@ -130,6 +160,9 @@ class Healer:
             ) from e
 
         action = result.action
+
+        if isinstance(action, ActionabilityStrategy) and action.reason == ActionabilityReason.VISIBLE:
+            return self._execute_visible_strategy_safe(context, action, result)
 
         if not isinstance(action, SelectorReplacement):
             # Only SelectorReplacement is implemented end-to-end today —
@@ -231,6 +264,9 @@ class Healer:
             output_tokens=result.output_tokens,
         )
 
+        if isinstance(action, ActionabilityStrategy) and action.reason == ActionabilityReason.VISIBLE:
+            return self._execute_visible_strategy_autonomous(context, action, result, timer)
+
         if not isinstance(action, SelectorReplacement):
             # Budget is already spent above — a real attempt happened,
             # even though Healer can't act on this result type yet.
@@ -271,3 +307,109 @@ class Healer:
             )
 
         return action.proposed_selector
+
+    def _wait_and_return_original(self, broken_selector: str, action: ActionabilityStrategy) -> str:
+        """
+        Sprint 8 (Option A, narrowed). The actual "execution" of a
+        WAIT_AND_RETRY strategy — waits, then hands back the SAME
+        selector that failed. There is no new selector to substitute:
+        the original one was never wrong, it just wasn't actionable
+        yet. `BasePage`'s existing single retry call does the rest
+        unmodified — this is the entire reason `attempt_heal()`'s
+        return contract didn't need to change (see module docstring).
+
+        Caller is responsible for confirming `action.strategy ==
+        WAIT_AND_RETRY` before calling this — it always waits, it does
+        not itself branch on strategy kind.
+        """
+        wait_ms = action.suggested_wait_ms
+        if not wait_ms or wait_ms <= 0:
+            wait_ms = DEFAULT_ACTIONABILITY_WAIT_MS
+        wait_ms = min(wait_ms, MAX_ACTIONABILITY_WAIT_MS)
+        self.page.wait_for_timeout(wait_ms)
+        return broken_selector
+
+    def _execute_visible_strategy_safe(self, context, action: ActionabilityStrategy, result) -> str:
+        """
+        Safe Mode counterpart to `_attempt_heal_safe`'s SelectorReplacement
+        path, for ActionabilityReason.VISIBLE only (see module docstring
+        and `request_human_review_actionability()`'s own docstring for
+        the full scope reasoning). `request_human_review_actionability()`
+        already auto-rejects (no prompt) for NO_SAFE_RECOVERY and for any
+        strategy kind outside the two VISIBLE supports — by the time
+        `accepted` is True here, `action.strategy` is guaranteed to be
+        WAIT_AND_RETRY, but the explicit check below stays anyway rather
+        than relying on that as an unstated contract.
+        """
+        accepted = request_human_review_actionability(context, action)
+        log_decision(
+            context, action, accepted, mode="safe",
+            provider=self.settings.ai_provider,
+            elapsed_ms=result.elapsed_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+        )
+
+        if not accepted:
+            strategy_name = action.strategy.value if action.strategy else "unknown"
+            raise HealingRejectedError(
+                f"Human rejected actionability strategy '{strategy_name}' "
+                f"for broken selector '{context.broken_selector}'"
+            )
+
+        if action.strategy != ActionabilityStrategyKind.WAIT_AND_RETRY:
+            raise HealingRejectedError(
+                f"Accepted strategy '{action.strategy}' has no execution path "
+                f"yet — only wait_and_retry is implemented for VISIBLE."
+            )
+
+        return self._wait_and_return_original(context.broken_selector, action)
+
+    def _execute_visible_strategy_autonomous(
+        self, context, action: ActionabilityStrategy, result, timer: HealLifecycleTimer
+    ) -> str:
+        """
+        Autonomous Mode counterpart, mirroring `_attempt_heal_autonomous`'s
+        SelectorReplacement path: log first (so a rejected/limit-exceeded
+        attempt is still on record), then the same two gates that path
+        already applies — full-lifecycle time budget, then confidence
+        threshold — plus a strategy-kind check specific to this path,
+        since NO_SAFE_RECOVERY/anything else has nothing to execute even
+        at full confidence.
+        """
+        strategy_ok = action.strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
+        log_decision(
+            context,
+            action,
+            accepted=(strategy_ok and action.confidence >= self.policy.min_confidence),
+            mode="autonomous",
+            provider=self.settings.ai_provider,
+            elapsed_ms=timer.elapsed_ms,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            attempt=self.budget.attempts_for(context.broken_selector),
+        )
+
+        if timer.elapsed_ms > self.policy.max_time_per_heal_ms:
+            raise HealingLimitExceededError(
+                f"Healing for '{context.broken_selector}' took {timer.elapsed_ms}ms, "
+                f"exceeding max_time_per_heal_ms ({self.policy.max_time_per_heal_ms}ms)"
+            )
+
+        if not strategy_ok:
+            strategy_name = action.strategy.value if action.strategy else "unknown"
+            raise HealingRejectedError(
+                f"Autonomous policy has nothing to execute for actionability "
+                f"strategy '{strategy_name}' on broken selector "
+                f"'{context.broken_selector}' — only wait_and_retry is executable."
+            )
+
+        if action.confidence < self.policy.min_confidence:
+            raise HealingRejectedError(
+                f"Autonomous policy rejected actionability strategy "
+                f"'{action.strategy.value}' for broken selector "
+                f"'{context.broken_selector}': confidence {action.confidence:.2f} "
+                f"below policy threshold {self.policy.min_confidence:.2f}"
+            )
+
+        return self._wait_and_return_original(context.broken_selector, action)

@@ -4863,7 +4863,87 @@ piece of work instead. The near-tie question stays open (Gap #16) —
 revisit only if a real usage case surfaces one that actually matters,
 not as a standalone research detour.
 
+### [Implementation] Option A, narrowed — `Healer` now executes `VISIBLE`'s `WAIT_AND_RETRY`
+
+Built per the D1–D7 decision list from direct discussion (all
+confirmed before writing code, matching this project's own "decide,
+then implement" habit since Sprint 5's Autonomous Mode design):
+
+- **`attempt_heal()`'s return contract unchanged** (still a bare
+  selector string) — `Healer._wait_and_return_original()` calls
+  `page.wait_for_timeout(ms)` internally, then hands back the SAME,
+  unmodified `broken_selector`. Zero changes to `BasePage.fill()`/
+  `click()` — the entire point of keeping the contract minimal (D1).
+- **Scope guard is explicit and tested**: only
+  `isinstance(action, ActionabilityStrategy) and action.reason ==
+  ActionabilityReason.VISIBLE` reaches the new execution path.
+  `RECEIVES_EVENTS` — even carrying an identical `WAIT_AND_RETRY`
+  strategy — still falls through to the original, unchanged "not yet
+  supported" rejection. Protected by a named regression test
+  (`test_receives_events_is_completely_unaffected_still_rejected`).
+- **`MAX_ACTIONABILITY_WAIT_MS = 5000` / `DEFAULT_ACTIONABILITY_WAIT_MS
+  = 1000`** (D3) — a malformed/hallucinated `suggested_wait_ms` cannot
+  become an unbounded sleep; Sprint 6B's live ground-truth scenarios
+  used `1200ms`, so `5000ms` is a generous but genuinely bounded
+  ceiling, not a guess. Both the cap and the missing-value fallback are
+  unit-tested directly.
+- **`NO_SAFE_RECOVERY` → `HealingRejectedError`** in both modes,
+  regardless of confidence — nothing to execute, fits the existing
+  exception family exactly (D4).
+- **`decision_logger.log_decision()` generalized** (D5): the two
+  `SelectorReplacement`-specific fields (`proposed_selector`,
+  `alternative_selectors`) now read via `getattr(..., default)`
+  instead of direct attribute access — this is precisely the "real,
+  future task" flagged (but deliberately not built) back when
+  `Healer` first started rejecting `ActionabilityStrategy` outright.
+  New fields (`strategy`, `suggested_wait_ms`, `blocking_element`,
+  `corrected_by_policy`, `original_strategy`, `policy_reason`)
+  surface `ActionabilityStrategy`-specific data — `None` for a
+  `SelectorReplacement` entry, populated for an `ActionabilityStrategy`
+  one. A human reading a policy-corrected log entry now sees "the
+  model said X, policy corrected to Y, because Z" directly, not just
+  the final answer.
+- **`request_human_review_actionability()`** (D6) — a genuinely
+  separate function from `request_human_review()`, not a branch bolted
+  onto it, per this project's own "divergence over unification"
+  instinct applied to review UX, not just collectors/prompts. Two
+  auto-reject paths that never call `input()`: `NO_SAFE_RECOVERY`
+  (nothing to wait for) and any `ActionabilityStrategyKind` outside
+  the two `VISIBLE` supports (a defensive guard — `visible_prompt.py`
+  already restricts the model to these two, but the review function
+  doesn't assume that restriction holds upstream). Both auto-reject
+  paths are tested against the REAL function body, not a monkeypatched
+  stand-in — a regression here would otherwise hide behind
+  `test_healer.py`'s own monkeypatching of this same function.
+- **`self.policy.min_confidence` reused as-is** for the Autonomous Mode
+  gate (D7) — no new policy object, same threshold, same semantics as
+  the existing `SelectorReplacement` path.
+
+**Two stale docstrings caught and fixed in the same pass** (same
+recurring pattern this project keeps naming): `actions.py`'s module
+and `ActionabilityStrategy` class docstrings both still said
+"rejected outright... no execution exists yet" — true when originally
+written, false as of this implementation.
+
+19 new unit tests across three files (`test_healer.py` +9,
+`test_decision_logger.py` +5, `test_safe_mode.py`, a NEW file, +5 —
+`request_human_review()` itself has never had direct unit tests, only
+Healer-level coverage via monkeypatch; `request_human_review_actionability()`
+gets real ones from the start, specifically so its two auto-reject
+paths can't regress silently behind a mock). 185/185 full suite,
+pyflakes clean.
+
+**Not yet done:** live verification against a real Chaos App +
+`visibilityDelay.jsx`. Everything above is correct in isolation
+against mocks — the actual `page.wait_for_timeout()` → Playwright
+re-attempting the SAME `fill()` → succeeding sequence has not been
+observed against a real browser. That remains the next concrete step,
+same "unit-tested logic in isolation is not a live result" distinction
+this project has drawn consistently since Sprint 4.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -4897,13 +4977,19 @@ not as a standalone research detour.
   not shared). Not pursued further — would require production-code
   changes solely to serve one comparison test. See [Decision]
   `ticket_row_ambiguity` deprioritized" above
-- **Decided: moving to Option A, narrowed** — `Healer` support for
-  executing an approved `ActionabilityStrategy`, scoped to `VISIBLE`
-  only (`RECEIVES_EVENTS` stays proposal-only for now). Next concrete
-  design step: how `Healer.attempt_heal()` — which today returns a bare
-  healed-selector string — accommodates "wait N ms then retry the SAME
-  original action" as a genuinely different return shape/flow than a
-  selector swap. Not designed yet
+- ~~Decided: moving to Option A, narrowed~~ — DESIGNED (D1–D7,
+  confirmed via direct discussion) AND IMPLEMENTED. `Healer` now
+  executes `VISIBLE`'s `WAIT_AND_RETRY` (waits, then retries with the
+  SAME original selector — no new selector, no `BasePage` changes) and
+  correctly declines `NO_SAFE_RECOVERY`/low-confidence in both Safe and
+  Autonomous Mode. `RECEIVES_EVENTS` deliberately untouched, still
+  proposal-only. 19 new unit tests, 185/185 full suite. See
+  [Implementation] "Option A, narrowed" above
+- **Not yet done: live verification.** Everything above is correct
+  against mocks, not yet observed against a real Chaos App +
+  `visibilityDelay.jsx` + real Ollama. This is the actual next step —
+  does `page.wait_for_timeout()` → Playwright re-attempting the SAME
+  `fill()` → succeeding actually work end-to-end, not just in isolation
 
 ---
 
@@ -4972,3 +5058,4 @@ not as a standalone research detour.
 - Sprint 8 narrow baseline slice: COMPLETE — all three planned live comparisons run (`locator_resolution` n=3, `visible_permanent` n=1, `visible_transient` n=1). Baseline provider matched `llama3.2` exactly, 5/5, always at higher confidence and zero cost/latency vs. `llama3.2`'s real token cost and 5.4–15.8s per call. Two real bugs caught live along the way: a `chaos_app/.env` config gotcha (testing `ACTIONABILITY` against a fixed selector requires `selector_rotation` forced OFF, or the failure misclassifies as `LOCATOR_RESOLUTION` before the actionability mechanism ever matters — now documented in `docs/known-limitations.md`), and a real `compare_baselines.py` bug (`ActionabilityReason`/`ActionabilityStrategyKind` Enum fields not JSON-serializable via plain `json.dumps()` — fixed with a `_json_default()` handler, 3 regression tests, 166/166 full suite). **Open decision for next session, not yet made:** whether this 5/5 result — explicitly the simplest tested case of each category per Gap #15 Threat 2 — is sufficient to move to narrow `VISIBLE` execution (Option A, narrowed), or whether `locator_resolution` at `MEDIUM`/`HIGH` with `dom_mutation` (untested, could produce a genuine near-tie) should be checked first. See `LEARNINGS.md` "[Conclusion] Sprint 8's narrow baseline slice — all three planned comparisons done"
 - Sprint 8 `MEDIUM`-level check: DONE — `locator_resolution` re-run at `VITE_CHAOS_LEVEL=MEDIUM` (`dom_mutation` active), n=3, still 3/3 — baseline now 8/8 total across `LOW`+`MEDIUM`. Confirmed `dom_mutation` tests landmark-walk robustness, not candidate ambiguity, as predicted — no near-tie surfaced. Incidental real finding: `HeuristicProvider` confidence varies (0.76 vs 1.00) depending on whether `selectorRotation.js`'s random suffix happens to contain a digit (`tokenize_selector()`'s rotation-suffix regex only strips suffixes with ≥1 digit, by deliberate Sprint 2 design) — did not affect correctness in any sample, but is a real, now-documented source of confidence variance. `HIGH` skipped as redundant (`async_delay` never touches `LoginForm`). **New idea, not yet built:** a `ticket_row_ambiguity` scenario against `TicketList`'s 3 structurally-identical rows — a genuine near-tie candidate, unlike `dom_mutation`. See `LEARNINGS.md` "[Verification] Fourth live comparison run"
 - Gap #16 (NEW): `ticket_row_ambiguity` investigated and deprioritized — `LocatorResolutionCollector`'s candidate scan doesn't match `<tr>` at all (outside its `input, button, select, textarea, label, a, [role]` scope), and even fixed, `TicketList`'s rotation design wouldn't produce a genuine tokenwise tie (each row's rotated name stays ticket-ID-specific). Decided NOT to pursue — would need production-code changes solely to serve one test. **Moving to Option A, narrowed: `Healer` execution support for an approved `ActionabilityStrategy`, scoped to `VISIBLE` only** — next concrete design step, not yet started. See `LEARNINGS.md` "[Decision] `ticket_row_ambiguity` deprioritized"
+- Sprint 8 Option A (narrowed): IMPLEMENTED — `Healer` executes `VISIBLE`'s `WAIT_AND_RETRY` (waits via `page.wait_for_timeout()`, capped at `MAX_ACTIONABILITY_WAIT_MS=5000`, then retries with the SAME original selector — no `BasePage` changes needed) and correctly declines `NO_SAFE_RECOVERY`/low-confidence in both modes. `RECEIVES_EVENTS` untouched, still proposal-only (regression-tested). `decision_logger.py` generalized to handle both `HealingAction` shapes without crashing; new `request_human_review_actionability()` in `safe_mode.py`, tested directly (not just via monkeypatch). 19 new unit tests, 185/185 full suite, pyflakes clean. **Live verification against a real Chaos App + Ollama still not done** — next concrete step. See `LEARNINGS.md` "[Implementation] Option A, narrowed"

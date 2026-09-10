@@ -30,7 +30,7 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 163 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
+**Current state: 185 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
 
 | Module under test | File | What's covered |
 |---|---|---|
@@ -46,9 +46,10 @@ actually produced (not just hypothetical ones).
 | Zero-LLM baseline: `ACTIONABILITY`/`VISIBLE` | `test_policy_only_provider.py` | `PolicyOnlyProvider` (Sprint 8, Gap #9): `target_state_changed_during_observation=True` → `WAIT_AND_RETRY` (mirrors Chaos App's TRANSIENT mode), `False`/missing/absent metadata → `NO_SAFE_RECOVERY` (mirrors PERMANENT mode and the same fail-safe default `actionability_policy.py` uses), `NotImplementedError` for `RECEIVES_EVENTS` and `LOCATOR_RESOLUTION` — this baseline is `ACTIONABILITY`/`VISIBLE` only, by design |
 | Baseline comparison tooling | `test_compare_baselines.py` | `scripts/compare_baselines.py`'s pure logic only (the script itself needs a live browser/Chaos App/Ollama, by design, same as `Healer`'s own live-only pieces): the live-correctness check's decision branches (exactly one match / zero / multiple / malformed selector, all mocked `Page`), the action-to-dict serialization helper, and both the ground-truth and provider-name mappings — including a named regression test for a real bug caught here (the provider-name field was originally derived from the action's module, identical for both baselines) |
 | LLM response parsing (selector) | `test_response_parser.py` | Clean JSON, markdown-fenced JSON, stray text around JSON, truncated JSON, missing fields, confidence clamping/coercion |
-| Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt) |
+| Decision logging | `test_decision_logger.py` | JSON Lines format, append behavior, mode labeling (caught hardcoded to "safe", see `LEARNINGS.md` Sprint 5), enriched fields (provider/tokens/timing/attempt). Sprint 8: `ActionabilityStrategy` logging without crashing on the `SelectorReplacement`-specific fields it doesn't have, `strategy`/`suggested_wait_ms`/policy-correction fields captured correctly, and symmetric null-field checks in both directions (a `SelectorReplacement` entry doesn't fabricate actionability fields either) |
 | Budget/policy enforcement | `test_autonomous_policy.py` | Total-vs-per-selector attempt limits, token limits, `None`-safe token handling, policy configurability |
-| Healer orchestration | `test_healer.py` | Safe Mode auto-reject on empty proposals, Autonomous Mode confidence gate, budget-exceeded blocking the LLM call entirely, provider exceptions still consuming budget, unsupported `HealingAction` type rejected loudly in both modes (Sprint 6B `SelectorReplacement`/`ActionabilityStrategy` migration) |
+| Healer orchestration | `test_healer.py` | Safe Mode auto-reject on empty proposals, Autonomous Mode confidence gate, budget-exceeded blocking the LLM call entirely, provider exceptions still consuming budget, unsupported `HealingAction` type rejected loudly in both modes (Sprint 6B `SelectorReplacement`/`ActionabilityStrategy` migration). Sprint 8 (Option A, narrowed): `VISIBLE`'s `WAIT_AND_RETRY` execution end-to-end in both modes (accept → `page.wait_for_timeout()` called with the right, capped/defaulted ms → SAME selector returned), `NO_SAFE_RECOVERY` and low-confidence correctly declined with no wait, and a named regression test confirming `RECEIVES_EVENTS` is completely unaffected by the new path |
+| Actionability review UX (Safe Mode) | `test_safe_mode.py` (NEW, Sprint 8) | `request_human_review_actionability()`'s own two auto-reject branches (`NO_SAFE_RECOVERY`, any unsupported strategy kind) tested against the REAL function body via `patch("builtins.input")`, not a monkeypatched stand-in — protects against a regression that `test_healer.py`'s own monkeypatching of this function would otherwise hide. Also covers the accept/reject/reprompt-on-invalid-input prompt flow for `WAIT_AND_RETRY` |
 | `BasePage` healing integration | `test_base_page.py` | `click()`/`fill()` catch all three `Healing*Error` types and re-raise the ORIGINAL Playwright error rather than the healing-internal one — a real Sprint 6A bug (the contract was documented but never actually implemented) caught while attempting live verification, not by a failing test |
 | Provider selection | `test_provider_factory.py` | Correct provider returned per `AI_PROVIDER` setting, error on unknown provider |
 
@@ -224,7 +225,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 163 tests, all passing |
+| Unit | ✅ Substantial | 185 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |

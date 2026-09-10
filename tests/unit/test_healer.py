@@ -24,10 +24,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from phoenix.ai.base_provider import HealingContext, ProviderResult
-from phoenix.collector.failure_classifier import FailureCategory
-from phoenix.healing.actions import SelectorReplacement
+from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
+from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind, SelectorReplacement
 from phoenix.healing.autonomous_policy import AutonomousPolicy
 from phoenix.healing.healer import (
+    DEFAULT_ACTIONABILITY_WAIT_MS,
+    MAX_ACTIONABILITY_WAIT_MS,
     Healer,
     HealingFailedError,
     HealingLimitExceededError,
@@ -46,6 +48,18 @@ def _make_context():
     )
 
 
+def _make_visible_context():
+    return HealingContext(
+        broken_selector="[data-testid='password']",
+        error_message="Locator.fill: Timeout 30000ms exceeded.",
+        dom_snapshot="<input data-testid='password'>",
+        page_url="http://localhost:5173/",
+        original_code="fill",
+        category=FailureCategory.ACTIONABILITY,
+        actionability_reason=ActionabilityReason.VISIBLE,
+    )
+
+
 def _make_healer(healing_mode="safe", policy=None):
     """
     Bypasses __init__ to avoid constructing a real provider/collector —
@@ -57,6 +71,7 @@ def _make_healer(healing_mode="safe", policy=None):
 
     healer = Healer.__new__(Healer)
     healer.settings = settings
+    healer.page = MagicMock()  # Sprint 8: VISIBLE execution calls page.wait_for_timeout()
     healer.collector = MagicMock()
     healer.collector.collect.return_value = _make_context()
     healer.provider = MagicMock()
@@ -275,3 +290,224 @@ class TestHealerAutonomousMode:
         with pytest.raises(HealingRejectedError, match="does not yet support"):
             healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
         assert healer.budget.attempts_total == 1
+
+
+@pytest.mark.unit
+class TestHealerVisibleStrategyExecution:
+    """
+    Sprint 8 (Option A, narrowed). Covers the ONE new thing Healer can
+    now do: execute ActionabilityReason.VISIBLE's WAIT_AND_RETRY
+    strategy (wait, then retry with the SAME original selector) and
+    correctly decline NO_SAFE_RECOVERY / low-confidence / anything else.
+    RECEIVES_EVENTS stays completely unaffected — see the last test.
+    """
+
+    def test_safe_mode_accepted_wait_and_retry_waits_and_returns_original_selector(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "phoenix.healing.healer.request_human_review_actionability",
+            lambda context, action: True,
+        )
+        healer = _make_healer(healing_mode="safe")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.9,
+                reasoning="state changed during observation",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+
+        result = healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+
+        # The selector coming back must be the SAME broken one — there
+        # is no new selector for an actionability fix, only a wait.
+        assert result == "[data-testid='password']"
+        healer.page.wait_for_timeout.assert_called_once_with(1200)
+
+    def test_safe_mode_rejected_wait_and_retry_never_waits(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "phoenix.healing.healer.request_human_review_actionability",
+            lambda context, action: False,
+        )
+        healer = _make_healer(healing_mode="safe")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.9,
+                reasoning="state changed",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="Human rejected"):
+            healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_not_called()
+
+    def test_safe_mode_no_safe_recovery_is_auto_rejected_without_hanging(self, tmp_path, monkeypatch):
+        # request_human_review_actionability() itself auto-rejects
+        # NO_SAFE_RECOVERY without calling input() — if this test ever
+        # accidentally reached the real function's input() prompt, it
+        # would hang rather than silently pass. Not monkeypatching the
+        # review function here is deliberate: this exercises the REAL
+        # auto-reject path, not a mocked stand-in for it.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="safe")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=1.0,
+                reasoning="state never changed",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError):
+            healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_not_called()
+
+    def test_autonomous_mode_high_confidence_wait_and_retry_executes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        policy = AutonomousPolicy(min_confidence=0.75)
+        healer = _make_healer(healing_mode="autonomous", policy=policy)
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.95,
+                reasoning="state changed during observation",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            ),
+            input_tokens=1764,
+            output_tokens=68,
+        )
+
+        result = healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+
+        assert result == "[data-testid='password']"
+        healer.page.wait_for_timeout.assert_called_once_with(1200)
+        assert healer.budget.attempts_total == 1
+        assert healer.budget.input_tokens_used == 1764
+
+    def test_autonomous_mode_low_confidence_wait_and_retry_is_rejected_no_wait(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        policy = AutonomousPolicy(min_confidence=0.90)
+        healer = _make_healer(healing_mode="autonomous", policy=policy)
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.60,
+                reasoning="plausible but not certain",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="below policy threshold"):
+            healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_not_called()
+        # Still counts as a spent attempt, same as every other rejection.
+        assert healer.budget.attempts_total == 1
+
+    def test_autonomous_mode_no_safe_recovery_is_rejected_regardless_of_confidence(
+        self, tmp_path, monkeypatch
+    ):
+        # Even at confidence 1.0, NO_SAFE_RECOVERY has nothing to
+        # execute — the confidence gate is a separate, later check that
+        # must never be reached first here.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=1.0,
+                reasoning="state never changed",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="nothing to execute"):
+            healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_not_called()
+
+    def test_suggested_wait_ms_is_capped_at_max(self, tmp_path, monkeypatch):
+        # A malformed/hallucinated wait time must not become an
+        # unbounded sleep — see MAX_ACTIONABILITY_WAIT_MS's docstring
+        # (Gap #10-style named stop condition).
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.95,
+                reasoning="state changed",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=999_999,
+            )
+        )
+
+        healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_called_once_with(MAX_ACTIONABILITY_WAIT_MS)
+
+    def test_missing_suggested_wait_ms_falls_back_to_default(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        healer.collector.collect.return_value = _make_visible_context()
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.95,
+                reasoning="state changed",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=None,
+            )
+        )
+
+        healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
+        healer.page.wait_for_timeout.assert_called_once_with(DEFAULT_ACTIONABILITY_WAIT_MS)
+
+    def test_receives_events_is_completely_unaffected_still_rejected(self, tmp_path, monkeypatch):
+        # Scope guard regression test: this project deliberately scoped
+        # Option A to VISIBLE only. A WAIT_AND_RETRY strategy for
+        # RECEIVES_EVENTS must still hit the OLD, generic "not yet
+        # supported" rejection — not the new execution path — even
+        # though the strategy kind looks identical.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        context = HealingContext(
+            broken_selector="[data-testid='btn-submit']",
+            error_message="Locator.click: Timeout 10000ms exceeded.",
+            dom_snapshot="<button>...</button>",
+            page_url="http://localhost:5173/",
+            original_code="click",
+            category=FailureCategory.ACTIONABILITY,
+            actionability_reason=ActionabilityReason.RECEIVES_EVENTS,
+        )
+        healer.collector.collect.return_value = context
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.95,
+                reasoning="overlay intercepts pointer events",
+                reason=ActionabilityReason.RECEIVES_EVENTS,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="does not yet support"):
+            healer.attempt_heal("[data-testid='btn-submit']", Exception("timeout"), "click")
+        healer.page.wait_for_timeout.assert_not_called()
