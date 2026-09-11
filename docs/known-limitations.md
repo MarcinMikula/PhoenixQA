@@ -149,18 +149,25 @@ boundary, just an incomplete-coverage one:
 
 ## Environment / tooling quirks (not project bugs, but easy to trip on)
 
-- **`VITE_VISIBILITY_DELAY_MS=30500`'s margin against `ActionabilityCollector`'s
-  observation window is too tight — caught live, causes real flakiness.**
+- **`VITE_VISIBILITY_DELAY_MS` must land INSIDE `ActionabilityCollector`'s
+  fixed-width observation window, not merely after it — a genuinely
+  narrow target, confirmed live (Sprint 8).**
   `_VISIBLE_OBSERVATION_WINDOW_MS = 1200`, starting right after
-  Playwright's own `fill()` timeout (`30000ms` default) expires. `30500`
-  leaves only a `500ms` margin for the reveal to land inside that
-  `1200ms` window — less than the window itself is wide. Confirmed live
-  (Sprint 8): two back-to-back test runs of the identical mechanism got
-  different results (`NO_SAFE_RECOVERY` then `WAIT_AND_RETRY`) purely
-  from system-jitter timing variance around this margin, not a code bug
-  — see `LEARNINGS.md`'s "[Verification] Live confirmation" entry.
-  Recommended: `VITE_VISIBILITY_DELAY_MS=32000` or higher until this is
-  re-tested and the margin formally revisited.
+  Playwright's own `fill()` timeout (`30000ms` default) expires — the
+  window is `[T, T+1200]` where `T ≈ 30000ms`, and the reveal must land
+  INSIDE that interval, not merely after `T` with "enough" margin.
+  `30500` (only `500ms` into the window) caused intermittent
+  `NO_SAFE_RECOVERY`/`WAIT_AND_RETRY` splits from ordinary system
+  jitter across identical back-to-back runs. `32000` (past `T+1200`
+  entirely) made it WORSE — a deterministic `NO_SAFE_RECOVERY` miss
+  every time, since the reveal now happens strictly after the window
+  closes. **Working value, re-tested 2/2 consistently:
+  `VITE_VISIBILITY_DELAY_MS=30800`** (aimed at the middle of the
+  window, not its edge) — see `LEARNINGS.md`'s "[Verification] Margin
+  correction" entry. This value is coupled to two other constants
+  (`_VISIBLE_OBSERVATION_WINDOW_MS` and Playwright's `fill()` default
+  timeout) — changing either without updating this one will silently
+  break the scenario again.
 - **`pytest -s` is required for Safe Mode to work at all.** Without it,
   pytest captures stdin/stdout and the human-review `input()` prompt
   never reaches the terminal — the run just hangs with no explanation.

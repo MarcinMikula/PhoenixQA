@@ -5044,7 +5044,45 @@ which leaves less margin than the observation window itself is wide.
 Revisit `docs/known-limitations.md`'s existing note on this env var
 once re-tested with the wider margin.
 
+### [Verification] Margin correction — `VITE_VISIBILITY_DELAY_MS=30800` gives consistent 2/2
+
+The `32000` recommendation from the previous entry was wrong, and the
+live re-test proved it wrong immediately — both runs got
+`no_safe_recovery` again, this time deterministically rather than
+intermittently. The error in reasoning: treating the observation
+window as "starts at `T`, extends outward, so push the reveal further
+past `T` for more margin." The window is actually FIXED-WIDTH,
+`[T, T+1200]` — the reveal has to land INSIDE that narrow interval, not
+safely after it. `32000ms` pushed the reveal to AFTER the window
+closes (`T+1200 ≈ 31200ms`), so the collector could never see a change
+— not intermittent bad luck this time, a structural miss every single
+run.
+
+Corrected value: `VITE_VISIBILITY_DELAY_MS=30800` — aimed at roughly
+the middle of the `[T, T+1200]` window instead of its edge, giving
+margin on both sides against jitter in exactly when `T` actually lands.
+Re-ran `pytest tests/chaos/ -m chaos -s`: **2/2 passed**, both log
+entries showing `strategy: wait_and_retry`, `accepted: true`,
+`suggested_wait_ms: 1200`, confidence `0.8` — consistent across both
+the "cold" first test and the "warm" second test, unlike `30500`'s
+intermittent split. This is the confirmation this slice was building
+toward: not just "it worked once," but a config value that produces
+the SAME correct result reliably.
+
+**Recorded as the working value** for anyone re-running this scenario:
+`VITE_VISIBILITY_DELAY_MS=30800`, not `30500` (too tight against the
+window's start) and not `32000` (past the window's end entirely).
+`docs/known-limitations.md`'s note on this updated accordingly. The
+underlying fragility — a hardcoded `30800` only works because
+`_VISIBLE_OBSERVATION_WINDOW_MS=1200` and Playwright's default `fill()`
+timeout is `30000ms`; either changing is a silent trap for whoever
+edits one without the other — is worth a future hardening pass (e.g.
+deriving the recommended delay from the actual constants rather than a
+hand-tuned magic number), but not blocking this verification.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5094,12 +5132,15 @@ once re-tested with the wider margin.
   working end-to-end (`page.wait_for_timeout()` → retry with the SAME
   selector → success, test passed). Also caught and fixed a
   file-corruption bug in `safe_mode.py` (self-import, broke CI) along
-  the way — see [Verification] entries above. **New follow-up, not yet
-  done:** widen `VITE_VISIBILITY_DELAY_MS` (currently `30500`, a
-  `500ms` margin against the collector's `1200ms` observation window)
-  to something like `32000` and re-test — the first live run's
-  `NO_SAFE_RECOVERY` result on `test_successful_login` traced to this
-  margin being too tight, not a code bug
+  the way — see [Verification] entries above.
+- ~~Widen `VITE_VISIBILITY_DELAY_MS` and re-test~~ — DONE, but the
+  first attempt (`32000`) was based on WRONG reasoning (treated the
+  observation window as open-ended rather than fixed-width) and made
+  things WORSE (0/2, deterministically missed). Corrected to `30800`
+  (middle of the `[T, T+1200]` window, not past its edge) — re-tested,
+  **2/2 passed consistently**. This slice is now genuinely done: not
+  just "worked once" but a config value that reliably reproduces the
+  correct result. See [Verification] "Margin correction" above
 
 ---
 
@@ -5170,3 +5211,4 @@ once re-tested with the wider margin.
 - Gap #16 (NEW): `ticket_row_ambiguity` investigated and deprioritized — `LocatorResolutionCollector`'s candidate scan doesn't match `<tr>` at all (outside its `input, button, select, textarea, label, a, [role]` scope), and even fixed, `TicketList`'s rotation design wouldn't produce a genuine tokenwise tie (each row's rotated name stays ticket-ID-specific). Decided NOT to pursue — would need production-code changes solely to serve one test. **Moving to Option A, narrowed: `Healer` execution support for an approved `ActionabilityStrategy`, scoped to `VISIBLE` only** — next concrete design step, not yet started. See `LEARNINGS.md` "[Decision] `ticket_row_ambiguity` deprioritized"
 - Sprint 8 Option A (narrowed): IMPLEMENTED — `Healer` executes `VISIBLE`'s `WAIT_AND_RETRY` (waits via `page.wait_for_timeout()`, capped at `MAX_ACTIONABILITY_WAIT_MS=5000`, then retries with the SAME original selector — no `BasePage` changes needed) and correctly declines `NO_SAFE_RECOVERY`/low-confidence in both modes. `RECEIVES_EVENTS` untouched, still proposal-only (regression-tested). `decision_logger.py` generalized to handle both `HealingAction` shapes without crashing; new `request_human_review_actionability()` in `safe_mode.py`, tested directly (not just via monkeypatch). 19 new unit tests, 185/185 full suite, pyflakes clean. **Live verification against a real Chaos App + Ollama still not done** — next concrete step. See `LEARNINGS.md` "[Implementation] Option A, narrowed"
 - Sprint 8 Option A: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end against real Chaos App + Ollama (`test_invalid_credentials` passed). A `safe_mode.py` file-corruption bug (self-import, broke CI collection entirely) was caught and fixed along the way — pyflakes structurally cannot catch this class of bug (static analysis doesn't execute imports). Also found: `VITE_VISIBILITY_DELAY_MS=30500`'s margin against the collector's `1200ms` observation window is too tight (`500ms`) — real system jitter can and did cause `NO_SAFE_RECOVERY` on one run, `WAIT_AND_RETRY` on the next, same mechanism. Widen to `~32000` and re-test — not yet done. See `LEARNINGS.md` "[Verification]" entries for both findings
+- Sprint 8 Option A margin: CORRECTED AND CONFIRMED — `32000` (the previous recommendation) was based on wrong reasoning about how the observation window works (treated as open-ended, actually fixed-width `[T, T+1200]`) and made results WORSE (0/2, deterministic miss). Correct value: `VITE_VISIBILITY_DELAY_MS=30800` (middle of the window, not past its edge) — re-tested, 2/2 passed consistently. Option A (narrowed) is now genuinely, reliably verified end-to-end, not just observed once. See `LEARNINGS.md` "[Verification] Margin correction"
