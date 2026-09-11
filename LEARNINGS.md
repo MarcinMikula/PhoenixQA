@@ -4941,7 +4941,112 @@ observed against a real browser. That remains the next concrete step,
 same "unit-tested logic in isolation is not a live result" distinction
 this project has drawn consistently since Sprint 4.
 
+### [Verification] `safe_mode.py` corrupted during editing — self-import broke CI, not caught by pyflakes
+
+Caught two ways, in this order: first live (Marcin's own local
+`pytest tests/chaos/`), then again independently by GitHub Actions CI
+after the fix was shared but not yet committed.
+
+Root cause: an earlier edit to `safe_mode.py` (adding
+`request_human_review_actionability()`) went wrong at the file-write
+level — the file ended up containing the ENTIRE contents of `healer.py`
+appended after the original `request_human_review()`, including
+`healer.py`'s own `from phoenix.healing.safe_mode import
+request_human_review, request_human_review_actionability` line. At
+import time, Python began executing `safe_mode.py`, hit that line
+midway through its own not-yet-finished initialization, and tried to
+import names from itself that didn't exist yet —
+`ImportError: cannot import name 'request_human_review_actionability'
+from partially initialized module 'phoenix.healing.safe_mode' (most
+likely due to a circular import)`. The `request_human_review_actionability()`
+function that was actually intended was never written to the file at
+all.
+
+**Why pyflakes never caught this**, worth naming explicitly since it's
+a real gap in this project's own quality-gate story: pyflakes performs
+static analysis on the AST — it checks for imported-but-unused names
+and undefined-but-used names, but it does not EXECUTE imports. A
+module importing itself is syntactically valid and, from a pure
+name-resolution standpoint at parse time, looks fine — the names being
+imported ARE defined later in the same file. The failure only exists
+at IMPORT-TIME EXECUTION ORDER, which static analysis doesn't model.
+This is the same category of gap as the `dom_snapshot` shape
+assumptions — "the tool that's supposed to catch this class of
+mistake structurally cannot," not a case of the tool being run
+incorrectly.
+
+Confirmed via `python3 -c "from pages.chaos_login_page import
+ChaosLoginPage"` — the exact import chain that failed for Marcin —
+both before the fix (reproduced the identical error) and after
+(succeeded cleanly), not just `pytest --collect-only`, since collection
+success can mask import-order subtleties an ad-hoc script exercises
+more directly.
+
+**Process gap, not just a code gap:** the fix was verified and shared
+as a file for Marcin to test LIVE, and the live test succeeded —
+but the fix was never committed. GitHub Actions CI (`.github/workflows/ci.yml`,
+which runs `pytest tests/unit/ -m unit` on every push) then caught the
+SAME bug independently on the next push, because the broken file was
+still what got pushed. Both catches are the SAME root cause, not two
+different bugs — recorded together because the sequencing itself is
+the lesson: a locally-verified fix that isn't committed is not a fixed
+codebase, and CI is exactly the safety net that catches that gap
+whether or not a human remembers to ask for the commit.
+
+### [Verification] Live confirmation: `VISIBLE` `WAIT_AND_RETRY` execution works end-to-end — plus a real timing-margin finding
+
+First live run of Sprint 8's Option A (narrowed) implementation,
+against `visibilityDelay.jsx` in `transient` mode
+(`VITE_VISIBILITY_DELAY_MS=30500`), `HEALING_MODE=autonomous`,
+`pytest tests/chaos/ -m chaos -s`. Two tests ran, one field each:
+
+**`test_invalid_credentials` (password field) — PASSED.** `llama3.2`
+correctly determined `wait_and_retry` (state changed between t0/t1,
+confidence 0.8, `suggested_wait_ms=1200`), `Healer` executed
+`page.wait_for_timeout(1200)`, retried `fill()` with the SAME original
+selector, and the retry succeeded — **the first live, end-to-end
+confirmation of the entire `collect → analyze → execute → retry →
+success` chain this slice was built to prove.**
+
+**`test_successful_login` (password field, first test in the session)
+— FAILED, but NOT a `Healer` bug.** `llama3.2` determined
+`no_safe_recovery` (state did NOT change between t0/t1, confidence
+0.8) — `Healer` correctly declined (nothing to execute), `BasePage`
+correctly re-raised the ORIGINAL `PlaywrightTimeout` rather than a
+healing-specific exception (exactly the documented, intended behavior
+— see `healer.py`'s `HealingRejectedError` docstring), and the test
+correctly failed to reflect that no fix was found. Every piece of code
+did exactly what it was designed to do, given the evidence it received.
+
+**The real finding is in why the EVIDENCE differed between two
+back-to-back runs of the identical mechanism** — this is Gap #15
+Threat 1 observed live, not theorized. `ActionabilityCollector`'s
+observation window is `_VISIBLE_OBSERVATION_WINDOW_MS = 1200`, starting
+essentially the moment `Healer` is invoked — i.e., right after
+Playwright's own `fill()` timeout (`30000ms` default) expires. With
+`VITE_VISIBILITY_DELAY_MS=30500`, the reveal is expected to land
+`500ms` into that `1200ms` window. **A `500ms` margin against a
+`1200ms` window is not a comfortable margin** — it assumes the gap
+between Playwright's timeout firing and the collector's `t0` snapshot
+is near-zero, which real system jitter (rendering, GC, OS scheduling)
+does not guarantee. `test_successful_login`, running first in a fresh
+pytest session, most plausibly had its `t0`/`t1` window land entirely
+before the `30500ms` reveal; `test_invalid_credentials`, running
+~41 seconds later against an already-warm browser, landed after it.
+Same mechanism, same code, different evidence purely from timing
+variance around a razor-thin margin — not a flaky test, a
+too-tight config value.
+
+**Recommendation, not yet applied:** widen `VITE_VISIBILITY_DELAY_MS`
+to something like `32000` (Playwright's `30000ms` + the `1200ms`
+observation window + a real buffer) rather than the current `30500`,
+which leaves less margin than the observation window itself is wide.
+Revisit `docs/known-limitations.md`'s existing note on this env var
+once re-tested with the wider margin.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -4985,11 +5090,16 @@ this project has drawn consistently since Sprint 4.
   Autonomous Mode. `RECEIVES_EVENTS` deliberately untouched, still
   proposal-only. 19 new unit tests, 185/185 full suite. See
   [Implementation] "Option A, narrowed" above
-- **Not yet done: live verification.** Everything above is correct
-  against mocks, not yet observed against a real Chaos App +
-  `visibilityDelay.jsx` + real Ollama. This is the actual next step —
-  does `page.wait_for_timeout()` → Playwright re-attempting the SAME
-  `fill()` → succeeding actually work end-to-end, not just in isolation
+- ~~Not yet done: live verification~~ — DONE. `WAIT_AND_RETRY` confirmed
+  working end-to-end (`page.wait_for_timeout()` → retry with the SAME
+  selector → success, test passed). Also caught and fixed a
+  file-corruption bug in `safe_mode.py` (self-import, broke CI) along
+  the way — see [Verification] entries above. **New follow-up, not yet
+  done:** widen `VITE_VISIBILITY_DELAY_MS` (currently `30500`, a
+  `500ms` margin against the collector's `1200ms` observation window)
+  to something like `32000` and re-test — the first live run's
+  `NO_SAFE_RECOVERY` result on `test_successful_login` traced to this
+  margin being too tight, not a code bug
 
 ---
 
@@ -5059,3 +5169,4 @@ this project has drawn consistently since Sprint 4.
 - Sprint 8 `MEDIUM`-level check: DONE — `locator_resolution` re-run at `VITE_CHAOS_LEVEL=MEDIUM` (`dom_mutation` active), n=3, still 3/3 — baseline now 8/8 total across `LOW`+`MEDIUM`. Confirmed `dom_mutation` tests landmark-walk robustness, not candidate ambiguity, as predicted — no near-tie surfaced. Incidental real finding: `HeuristicProvider` confidence varies (0.76 vs 1.00) depending on whether `selectorRotation.js`'s random suffix happens to contain a digit (`tokenize_selector()`'s rotation-suffix regex only strips suffixes with ≥1 digit, by deliberate Sprint 2 design) — did not affect correctness in any sample, but is a real, now-documented source of confidence variance. `HIGH` skipped as redundant (`async_delay` never touches `LoginForm`). **New idea, not yet built:** a `ticket_row_ambiguity` scenario against `TicketList`'s 3 structurally-identical rows — a genuine near-tie candidate, unlike `dom_mutation`. See `LEARNINGS.md` "[Verification] Fourth live comparison run"
 - Gap #16 (NEW): `ticket_row_ambiguity` investigated and deprioritized — `LocatorResolutionCollector`'s candidate scan doesn't match `<tr>` at all (outside its `input, button, select, textarea, label, a, [role]` scope), and even fixed, `TicketList`'s rotation design wouldn't produce a genuine tokenwise tie (each row's rotated name stays ticket-ID-specific). Decided NOT to pursue — would need production-code changes solely to serve one test. **Moving to Option A, narrowed: `Healer` execution support for an approved `ActionabilityStrategy`, scoped to `VISIBLE` only** — next concrete design step, not yet started. See `LEARNINGS.md` "[Decision] `ticket_row_ambiguity` deprioritized"
 - Sprint 8 Option A (narrowed): IMPLEMENTED — `Healer` executes `VISIBLE`'s `WAIT_AND_RETRY` (waits via `page.wait_for_timeout()`, capped at `MAX_ACTIONABILITY_WAIT_MS=5000`, then retries with the SAME original selector — no `BasePage` changes needed) and correctly declines `NO_SAFE_RECOVERY`/low-confidence in both modes. `RECEIVES_EVENTS` untouched, still proposal-only (regression-tested). `decision_logger.py` generalized to handle both `HealingAction` shapes without crashing; new `request_human_review_actionability()` in `safe_mode.py`, tested directly (not just via monkeypatch). 19 new unit tests, 185/185 full suite, pyflakes clean. **Live verification against a real Chaos App + Ollama still not done** — next concrete step. See `LEARNINGS.md` "[Implementation] Option A, narrowed"
+- Sprint 8 Option A: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end against real Chaos App + Ollama (`test_invalid_credentials` passed). A `safe_mode.py` file-corruption bug (self-import, broke CI collection entirely) was caught and fixed along the way — pyflakes structurally cannot catch this class of bug (static analysis doesn't execute imports). Also found: `VITE_VISIBILITY_DELAY_MS=30500`'s margin against the collector's `1200ms` observation window is too tight (`500ms`) — real system jitter can and did cause `NO_SAFE_RECOVERY` on one run, `WAIT_AND_RETRY` on the next, same mechanism. Widen to `~32000` and re-test — not yet done. See `LEARNINGS.md` "[Verification]" entries for both findings

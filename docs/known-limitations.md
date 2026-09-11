@@ -149,6 +149,18 @@ boundary, just an incomplete-coverage one:
 
 ## Environment / tooling quirks (not project bugs, but easy to trip on)
 
+- **`VITE_VISIBILITY_DELAY_MS=30500`'s margin against `ActionabilityCollector`'s
+  observation window is too tight — caught live, causes real flakiness.**
+  `_VISIBLE_OBSERVATION_WINDOW_MS = 1200`, starting right after
+  Playwright's own `fill()` timeout (`30000ms` default) expires. `30500`
+  leaves only a `500ms` margin for the reveal to land inside that
+  `1200ms` window — less than the window itself is wide. Confirmed live
+  (Sprint 8): two back-to-back test runs of the identical mechanism got
+  different results (`NO_SAFE_RECOVERY` then `WAIT_AND_RETRY`) purely
+  from system-jitter timing variance around this margin, not a code bug
+  — see `LEARNINGS.md`'s "[Verification] Live confirmation" entry.
+  Recommended: `VITE_VISIBILITY_DELAY_MS=32000` or higher until this is
+  re-tested and the margin formally revisited.
 - **`pytest -s` is required for Safe Mode to work at all.** Without it,
   pytest captures stdin/stdout and the human-review `input()` prompt
   never reaches the terminal — the run just hangs with no explanation.
