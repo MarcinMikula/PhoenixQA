@@ -5080,7 +5080,42 @@ edits one without the other — is worth a future hardening pass (e.g.
 deriving the recommended delay from the actual constants rather than a
 hand-tuned magic number), but not blocking this verification.
 
+### [Verification] `request_human_review_actionability()` confirmed live in a real terminal
+
+First live sighting of the Safe Mode UX built for Option A (narrowed) —
+until now, only unit-tested against mocked `input()`. Ran
+`pytest tests/chaos/ -m chaos -s` with `HEALING_MODE=safe`,
+`VITE_VISIBILITY_DELAY_MS=30800` (the corrected, verified value). Both
+tests correctly triggered the review screen; the screen rendered
+exactly as designed: page URL, broken selector, the full Playwright
+call log, `Actionability: visible`, `Proposed strategy: wait_and_retry`,
+`Suggested wait: 1200ms`, `Confidence: 80%`, the model's reasoning, then
+the `[y/n]` prompt. Both answered `y` — both tests passed, confirming
+the accept path works identically to Autonomous Mode's already-verified
+execution, just gated by a human instead of a confidence threshold.
+
+**Small gotcha hit along the way, not a bug:** the first attempt still
+ran in `autonomous` mode despite editing `.env` — the file had grown a
+second, stray commented-out `# HEALING_MODE=autonomous` line alongside
+the live `HEALING_MODE=autonomous` one, and the edit added a new line
+rather than changing the existing one. Same category of gotcha this
+project has hit before (Sprint 5's `OLLAMA_MODEL` default mismatch,
+Sprint 6A's `VITE_COMPONENT_REMOUNT_ENABLED`) — when something "should
+have changed" but didn't, check the actual `.env` file content
+directly, specifically for duplicate/stray lines, not just whether the
+edit was saved.
+
+**Not yet exercised live: the reject path (`n`).** Both prompts were
+answered `y` in this run. The reject path's LOGIC is thoroughly
+unit-tested (`test_healer.py`'s
+`test_safe_mode_rejected_wait_and_retry_never_waits`, plus
+`test_safe_mode.py`'s direct `NO_SAFE_RECOVERY`/unsupported-strategy
+auto-reject tests) — this is a minor completeness gap in live coverage,
+not an unverified code path.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5141,6 +5176,14 @@ hand-tuned magic number), but not blocking this verification.
   **2/2 passed consistently**. This slice is now genuinely done: not
   just "worked once" but a config value that reliably reproduces the
   correct result. See [Verification] "Margin correction" above
+- ~~Test Safe Mode UX live~~ — DONE.
+  `request_human_review_actionability()` confirmed rendering correctly
+  in a real terminal (page URL, error, strategy, wait time, confidence,
+  reasoning, `[y/n]` prompt) and the accept path works identically to
+  Autonomous Mode's execution. **Reject path (`n`) still not exercised
+  live** — logic is thoroughly unit-tested, this is a minor live-coverage
+  gap, not an open question about correctness. See [Verification]
+  "confirmed live in a real terminal" above
 
 ---
 
@@ -5212,3 +5255,4 @@ hand-tuned magic number), but not blocking this verification.
 - Sprint 8 Option A (narrowed): IMPLEMENTED — `Healer` executes `VISIBLE`'s `WAIT_AND_RETRY` (waits via `page.wait_for_timeout()`, capped at `MAX_ACTIONABILITY_WAIT_MS=5000`, then retries with the SAME original selector — no `BasePage` changes needed) and correctly declines `NO_SAFE_RECOVERY`/low-confidence in both modes. `RECEIVES_EVENTS` untouched, still proposal-only (regression-tested). `decision_logger.py` generalized to handle both `HealingAction` shapes without crashing; new `request_human_review_actionability()` in `safe_mode.py`, tested directly (not just via monkeypatch). 19 new unit tests, 185/185 full suite, pyflakes clean. **Live verification against a real Chaos App + Ollama still not done** — next concrete step. See `LEARNINGS.md` "[Implementation] Option A, narrowed"
 - Sprint 8 Option A: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end against real Chaos App + Ollama (`test_invalid_credentials` passed). A `safe_mode.py` file-corruption bug (self-import, broke CI collection entirely) was caught and fixed along the way — pyflakes structurally cannot catch this class of bug (static analysis doesn't execute imports). Also found: `VITE_VISIBILITY_DELAY_MS=30500`'s margin against the collector's `1200ms` observation window is too tight (`500ms`) — real system jitter can and did cause `NO_SAFE_RECOVERY` on one run, `WAIT_AND_RETRY` on the next, same mechanism. Widen to `~32000` and re-test — not yet done. See `LEARNINGS.md` "[Verification]" entries for both findings
 - Sprint 8 Option A margin: CORRECTED AND CONFIRMED — `32000` (the previous recommendation) was based on wrong reasoning about how the observation window works (treated as open-ended, actually fixed-width `[T, T+1200]`) and made results WORSE (0/2, deterministic miss). Correct value: `VITE_VISIBILITY_DELAY_MS=30800` (middle of the window, not past its edge) — re-tested, 2/2 passed consistently. Option A (narrowed) is now genuinely, reliably verified end-to-end, not just observed once. See `LEARNINGS.md` "[Verification] Margin correction"
+- Sprint 8 Option A Safe Mode UX: LIVE-CONFIRMED — `request_human_review_actionability()` renders correctly in a real terminal, accept path works identically to Autonomous Mode's execution. Reject path (`n`) not yet exercised live (unit-tested only) — minor coverage gap, not an open correctness question. See `LEARNINGS.md` "[Verification] confirmed live in a real terminal"
