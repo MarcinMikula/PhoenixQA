@@ -12,17 +12,23 @@ member — the original live, end-to-end CONSUMED path (Healer acts on
 it). ActionabilityStrategy (FailureCategory.ACTIONABILITY) is produced
 by OllamaProvider for two of five ActionabilityReason values —
 RECEIVES_EVENTS and VISIBLE (Sprint 6B, both live-verified). Since
-Sprint 8 (Option A, narrowed), Healer also EXECUTES this for VISIBLE's
-WAIT_AND_RETRY/NO_SAFE_RECOVERY strategies specifically — RECEIVES_EVENTS
-remains proposal-only, still rejected outright, same as before.
+Sprint 8 (Option A, narrowed then widened), Healer EXECUTES
+WAIT_AND_RETRY/NO_SAFE_RECOVERY for BOTH reasons — first built for
+VISIBLE alone, then live-verified and widened to also cover
+RECEIVES_EVENTS once the shared machinery proved reliable.
+RECEIVES_EVENTS' third allowed strategy, DISMISS_BLOCKER, remains
+proposal-only, still rejected outright — actionability_policy.py
+doesn't yet validate blocking_element against the live DOM, so
+executing it would mean clicking whatever a raw, unverified HTML
+string from the model produced.
 ENABLED/EDITABLE/STABLE remain unimplemented at the collector/prompt
 level, not just unconsumed. RetryStrategy (the dormant
 FailureCategory.REFERENCE) remains declared-only, same pattern as
 FailureType's original four members in Sprint 2 — declared, not all
 implemented at once. Healer explicitly guards every action type it
-receives — SelectorReplacement, VISIBLE's two supported strategies, or
-"not yet supported" — rather than silently mishandling one (see
-healer.py).
+receives — SelectorReplacement, the WAIT_AND_RETRY/NO_SAFE_RECOVERY
+strategies shared by VISIBLE/RECEIVES_EVENTS, or "not yet supported"
+— rather than silently mishandling one (see healer.py).
 """
 from dataclasses import dataclass, field
 from enum import Enum
@@ -69,10 +75,11 @@ class ActionabilityStrategy(HealingAction):
     """
     FailureCategory.ACTIONABILITY's action shape — produced by
     OllamaProvider for RECEIVES_EVENTS and VISIBLE (Sprint 6B, both
-    live-verified). Since Sprint 8 (Option A, narrowed), Healer
-    EXECUTES this for VISIBLE's WAIT_AND_RETRY/NO_SAFE_RECOVERY only
-    (see healer.py's _execute_visible_strategy_safe/_autonomous) —
-    RECEIVES_EVENTS remains proposal-only, still rejected outright.
+    live-verified). Since Sprint 8 (Option A, narrowed then widened),
+    Healer EXECUTES WAIT_AND_RETRY/NO_SAFE_RECOVERY for BOTH reasons
+    (see healer.py's _execute_wait_and_retry_safe/_autonomous) —
+    RECEIVES_EVENTS' third allowed strategy, DISMISS_BLOCKER, remains
+    proposal-only, still rejected outright.
     `strategy` exists alongside `reason` because a single
     ActionabilityReason doesn't imply a single
     fix (VISIBLE alone could mean wait, scroll into view, expand a

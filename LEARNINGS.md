@@ -5113,7 +5113,74 @@ unit-tested (`test_healer.py`'s
 auto-reject tests) — this is a minor completeness gap in live coverage,
 not an unverified code path.
 
+### [Implementation] Execution widened to `RECEIVES_EVENTS` — `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` only
+
+Decided per direct discussion, after `VISIBLE`'s narrow execution was
+live-verified twice (Autonomous and Safe Mode, both consistently). The
+scope question investigated first, before any code: `RECEIVES_EVENTS`
+allows THREE strategies (`wait_and_retry`, `dismiss_blocker`,
+`no_safe_recovery` — one more than `VISIBLE`'s two), and
+`actionability_policy.py`'s `validate_receives_events_strategy()` does
+NOT validate `dismiss_blocker` against the live DOM at all (only
+corrects an unsupported `wait_and_retry` down to `no_safe_recovery`) —
+executing `dismiss_blocker` blind would mean parsing a raw, unverified
+HTML string from the model and clicking whatever that produced.
+Decision: widen to `wait_and_retry`/`no_safe_recovery` only — the exact
+same machinery already built and verified for `VISIBLE`, zero new
+execution logic — and leave `dismiss_blocker` explicitly rejected,
+same as before, deferred to its own future slice once a DOM-validated
+guardrail exists for it.
+
+Mechanically small: `healer.py`'s scope check widened from
+`action.reason == VISIBLE` to `action.reason in (VISIBLE,
+RECEIVES_EVENTS)`; `_execute_visible_strategy_safe/_autonomous` renamed
+to `_execute_wait_and_retry_safe/_autonomous` (the internal
+`action.strategy != WAIT_AND_RETRY` check inside them already rejected
+anything else generically — `dismiss_blocker` needed zero new rejection
+logic, just the rename to stop the method name lying about what it now
+does). `request_human_review_actionability()`'s scope-limiting checks
+were already reason-agnostic (checked `action.strategy`, never
+`action.reason`) — needed only docstring/message updates, no logic
+changes.
+
+**A real gap caught by a new test, not by using the code:** the
+widened scope check originally looked at `action.reason` alone, with
+no cross-check against `context.category`. In the real pipeline these
+are always consistent — only `ActionabilityCollector` ever sets
+`actionability_reason`, only for `ACTIONABILITY` contexts — but nothing
+enforced that structurally. A test constructing a deliberately
+inconsistent mock (a `LOCATOR_RESOLUTION` context paired with an
+`ActionabilityStrategy` claiming `RECEIVES_EVENTS`) executed
+successfully instead of being rejected, before `context.category ==
+FailureCategory.ACTIONABILITY` was added as an explicit third
+condition alongside the `isinstance`/`reason` checks. Same recurring
+pattern this project keeps naming across sprints — caught by writing a
+test that exercises an edge the "obviously fine" code path never
+considered.
+
+Test suite: replaced the now-intentionally-outdated
+`test_receives_events_is_completely_unaffected_still_rejected` (which
+asserted the OLD, narrower boundary) with four new tests —
+`RECEIVES_EVENTS`+`WAIT_AND_RETRY` now executes,
+`RECEIVES_EVENTS`+`DISMISS_BLOCKER` still rejected,
+`VISIBLE`+`SCROLL_INTO_VIEW` (an unanticipated kind) still rejected,
+and the category/reason mismatch cross-check. Old test replaced rather
+than silently deleted, so the change in intended behavior is visible in
+the test history, not just inferred from a diff. 188/188 full suite,
+pyflakes clean.
+
+**Not yet done: live verification for `RECEIVES_EVENTS` specifically.**
+`VISIBLE`'s execution is live-verified (twice); this widening reuses
+identical machinery but has only been confirmed against mocks so far —
+same "unit-tested logic is not a live result" distinction this project
+draws every time. Live verification would need
+`pointerEventsOverlay.jsx` active and a real overlay scenario where the
+model genuinely proposes `wait_and_retry` (e.g. an animated overlay
+that disappears on its own) — not yet attempted.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5184,6 +5251,15 @@ not an unverified code path.
   live** — logic is thoroughly unit-tested, this is a minor live-coverage
   gap, not an open question about correctness. See [Verification]
   "confirmed live in a real terminal" above
+- ~~Extend execution to `RECEIVES_EVENTS`~~ — DONE, narrowed to
+  `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` (`DISMISS_BLOCKER` deliberately
+  still excluded — no DOM-validated guardrail exists for it yet).
+  Caught a real cross-check gap via a new test (`action.reason` alone
+  wasn't cross-checked against `context.category`) — now fixed and
+  tested. 188/188 full suite. **Not yet live-verified for
+  `RECEIVES_EVENTS` specifically** — reuses `VISIBLE`'s already-verified
+  machinery unchanged, but only confirmed against mocks so far. See
+  [Implementation] "Execution widened to RECEIVES_EVENTS" above
 
 ---
 
@@ -5256,3 +5332,4 @@ not an unverified code path.
 - Sprint 8 Option A: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end against real Chaos App + Ollama (`test_invalid_credentials` passed). A `safe_mode.py` file-corruption bug (self-import, broke CI collection entirely) was caught and fixed along the way — pyflakes structurally cannot catch this class of bug (static analysis doesn't execute imports). Also found: `VITE_VISIBILITY_DELAY_MS=30500`'s margin against the collector's `1200ms` observation window is too tight (`500ms`) — real system jitter can and did cause `NO_SAFE_RECOVERY` on one run, `WAIT_AND_RETRY` on the next, same mechanism. Widen to `~32000` and re-test — not yet done. See `LEARNINGS.md` "[Verification]" entries for both findings
 - Sprint 8 Option A margin: CORRECTED AND CONFIRMED — `32000` (the previous recommendation) was based on wrong reasoning about how the observation window works (treated as open-ended, actually fixed-width `[T, T+1200]`) and made results WORSE (0/2, deterministic miss). Correct value: `VITE_VISIBILITY_DELAY_MS=30800` (middle of the window, not past its edge) — re-tested, 2/2 passed consistently. Option A (narrowed) is now genuinely, reliably verified end-to-end, not just observed once. See `LEARNINGS.md` "[Verification] Margin correction"
 - Sprint 8 Option A Safe Mode UX: LIVE-CONFIRMED — `request_human_review_actionability()` renders correctly in a real terminal, accept path works identically to Autonomous Mode's execution. Reject path (`n`) not yet exercised live (unit-tested only) — minor coverage gap, not an open correctness question. See `LEARNINGS.md` "[Verification] confirmed live in a real terminal"
+- Sprint 8 Option A widened to `RECEIVES_EVENTS`: DONE — `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` execution now shared by both `VISIBLE` and `RECEIVES_EVENTS` (`DISMISS_BLOCKER` still excluded, no DOM-validated guardrail exists for it). Methods renamed `_execute_wait_and_retry_safe/_autonomous` to stop lying about scope. Caught and fixed a real gap via a new test: `action.reason` wasn't cross-checked against `context.category`, now fixed with an explicit `FailureCategory.ACTIONABILITY` guard. 188/188 full suite, pyflakes clean. **Not yet live-verified for `RECEIVES_EVENTS`** — next step. See `LEARNINGS.md` "[Implementation] Execution widened to RECEIVES_EVENTS"

@@ -77,11 +77,11 @@ def request_human_review_actionability(context: HealingContext, action: Actionab
     failure type; this is the same instinct applied to the review UX).
     A human reviewing "wait 1200ms and retry the SAME action" needs to
     see a strategy and a wait time, not a proposed selector — showing
-    an empty "Proposed selector:" line for every VISIBLE review would
+    an empty "Proposed selector:" line for every actionability review would
     be confusing, not just cosmetically different.
 
-    Scope: called only for ActionabilityReason.VISIBLE (see healer.py)
-    — the two strategies that reason's prompt is restricted to,
+    Scope: called for ActionabilityReason.VISIBLE and RECEIVES_EVENTS
+    (see healer.py) — the two strategies shared between them,
     WAIT_AND_RETRY and NO_SAFE_RECOVERY, are both handled explicitly
     below. Any other ActionabilityStrategyKind reaching this function
     would be a Healer-level scope bug, not a human decision — printed
@@ -120,7 +120,7 @@ def request_human_review_actionability(context: HealingContext, action: Actionab
         ActionabilityStrategyKind.NO_SAFE_RECOVERY,
     ):
         print(
-            f"⚠️  Strategy '{strategy_name}' is not supported for VISIBLE yet "
+            f"⚠️  Strategy '{strategy_name}' is not supported yet "
             f"(only wait_and_retry/no_safe_recovery are). Nothing to accept — "
             f"auto-rejecting."
         )

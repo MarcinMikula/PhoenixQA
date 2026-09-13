@@ -30,7 +30,7 @@ plumbing) gets dedicated unit tests, written to cover both the happy
 path and the specific edge cases that real LLM/Playwright output has
 actually produced (not just hypothetical ones).
 
-**Current state: 185 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
+**Current state: 188 tests, all passing** (confirmed via `pytest tests/unit/ -m unit`).
 
 | Module under test | File | What's covered |
 |---|---|---|
@@ -225,7 +225,7 @@ realistic future scope, not currently planned for any specific sprint.
 
 | Layer | Status | Test count / evidence |
 |---|---|---|
-| Unit | ✅ Substantial | 185 tests, all passing |
+| Unit | ✅ Substantial | 188 tests, all passing |
 | Integration | 🔴 Not yet built as distinct layer | `tests/integration/` scaffolded, empty |
 | End-to-end | 🟡 Manual, both modes confirmed | 2+ live runs each, real bugs found and fixed |
 | Regression benchmark | 🔴 Scoped to Sprint 8 | Not started — deliberately sequenced |

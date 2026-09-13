@@ -480,12 +480,13 @@ class TestHealerVisibleStrategyExecution:
         healer.attempt_heal("[data-testid='password']", Exception("timeout"), "fill")
         healer.page.wait_for_timeout.assert_called_once_with(DEFAULT_ACTIONABILITY_WAIT_MS)
 
-    def test_receives_events_is_completely_unaffected_still_rejected(self, tmp_path, monkeypatch):
-        # Scope guard regression test: this project deliberately scoped
-        # Option A to VISIBLE only. A WAIT_AND_RETRY strategy for
-        # RECEIVES_EVENTS must still hit the OLD, generic "not yet
-        # supported" rejection — not the new execution path — even
-        # though the strategy kind looks identical.
+    def test_receives_events_wait_and_retry_now_executes_scope_widened(self, tmp_path, monkeypatch):
+        # Scope WIDENED (Sprint 8, second slice): RECEIVES_EVENTS'
+        # WAIT_AND_RETRY now executes via the SAME shared machinery as
+        # VISIBLE's — this test used to assert the opposite (rejection)
+        # before the scope was deliberately widened; replaced rather
+        # than silently deleted so the change in behavior is visible in
+        # the test history, not just inferred from a diff.
         monkeypatch.chdir(tmp_path)
         healer = _make_healer(healing_mode="autonomous")
         context = HealingContext(
@@ -501,13 +502,107 @@ class TestHealerVisibleStrategyExecution:
         healer.provider.analyze_failure.return_value = ProviderResult(
             action=ActionabilityStrategy(
                 confidence=0.95,
-                reasoning="overlay intercepts pointer events",
+                reasoning="overlay intercepts pointer events, but animation "
+                          "declared suggests it will disappear",
                 reason=ActionabilityReason.RECEIVES_EVENTS,
                 strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
                 suggested_wait_ms=1200,
             )
         )
 
-        with pytest.raises(HealingRejectedError, match="does not yet support"):
+        result = healer.attempt_heal("[data-testid='btn-submit']", Exception("timeout"), "click")
+
+        assert result == "[data-testid='btn-submit']"
+        healer.page.wait_for_timeout.assert_called_once_with(1200)
+
+    def test_receives_events_dismiss_blocker_still_rejected_not_executed(self, tmp_path, monkeypatch):
+        # DISMISS_BLOCKER is deliberately NOT part of this scope widening
+        # — actionability_policy.py does not yet validate blocking_element
+        # against the live DOM, so executing it would mean clicking
+        # whatever a raw, unverified HTML string from the model produced.
+        # Must still hit the generic "not yet supported" rejection, same
+        # as before the widening — only WAIT_AND_RETRY's scope grew.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        context = HealingContext(
+            broken_selector="[data-testid='btn-submit']",
+            error_message="Locator.click: Timeout 10000ms exceeded.",
+            dom_snapshot="<button>...</button>",
+            page_url="http://localhost:5173/",
+            original_code="click",
+            category=FailureCategory.ACTIONABILITY,
+            actionability_reason=ActionabilityReason.RECEIVES_EVENTS,
+        )
+        healer.collector.collect.return_value = context
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.9,
+                reasoning="cookie banner has a visible Accept button",
+                reason=ActionabilityReason.RECEIVES_EVENTS,
+                strategy=ActionabilityStrategyKind.DISMISS_BLOCKER,
+                blocking_element='<button data-testid="cookie-accept">Accept</button>',
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="only wait_and_retry is executable"):
             healer.attempt_heal("[data-testid='btn-submit']", Exception("timeout"), "click")
+        healer.page.wait_for_timeout.assert_not_called()
+
+    def test_scroll_into_view_still_rejected_not_executed(self, tmp_path, monkeypatch):
+        # Neither VISIBLE nor RECEIVES_EVENTS' prompts ever propose
+        # SCROLL_INTO_VIEW today, but the enum member exists — a
+        # defensive check that an unanticipated strategy kind still
+        # fails loudly rather than being silently executed as a wait.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        context = HealingContext(
+            broken_selector="[data-testid='btn-submit']",
+            error_message="Locator.click: Timeout 10000ms exceeded.",
+            dom_snapshot="<button>...</button>",
+            page_url="http://localhost:5173/",
+            original_code="click",
+            category=FailureCategory.ACTIONABILITY,
+            actionability_reason=ActionabilityReason.VISIBLE,
+        )
+        healer.collector.collect.return_value = context
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.9,
+                reasoning="unexpected",
+                reason=ActionabilityReason.VISIBLE,
+                strategy=ActionabilityStrategyKind.SCROLL_INTO_VIEW,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="only wait_and_retry is executable"):
+            healer.attempt_heal("[data-testid='btn-submit']", Exception("timeout"), "click")
+        healer.page.wait_for_timeout.assert_not_called()
+
+    def test_mismatched_category_still_rejected_cross_check_enforced(self, tmp_path, monkeypatch):
+        # Caught by writing this test, not by using the code: the scope
+        # check originally looked at action.reason alone, with no
+        # cross-check against context.category. In the real pipeline
+        # these two are always consistent (only ActionabilityCollector
+        # ever sets actionability_reason, only for ACTIONABILITY
+        # contexts) — but nothing enforced that structurally, and this
+        # exact mock (LOCATOR_RESOLUTION context + an ActionabilityStrategy
+        # claiming RECEIVES_EVENTS) executed successfully instead of
+        # being rejected, before context.category was added as an
+        # explicit second condition. Now genuinely enforced, not just
+        # assumed true by construction.
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.95,
+                reasoning="mismatched category",
+                reason=ActionabilityReason.RECEIVES_EVENTS,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+        # default _make_healer() context has category=LOCATOR_RESOLUTION
+
+        with pytest.raises(HealingRejectedError, match="does not yet support"):
+            healer.attempt_heal("[data-testid='btn-login']", Exception("timeout"), "click")
         healer.page.wait_for_timeout.assert_not_called()

@@ -35,16 +35,21 @@ action rather than assuming one — deliberate, not an oversight: nothing
 in `Healer` yet knows how to retry a wait/dismiss strategy the way it
 knows how to retry a healed selector.
 
-Sprint 8 (Option A, narrowed) — that changes for ONE case:
-`ActionabilityReason.VISIBLE`, and only its two prompt-restricted
-strategies (`WAIT_AND_RETRY`/`NO_SAFE_RECOVERY`; see
-`phoenix/ai/prompts/visible_prompt.py`). Decided per direct discussion,
-after Sprint 8's baseline comparison held at 8/8 and a genuine near-tie
-test (`ticket_row_ambiguity`, Gap #16) was investigated and
-deprioritized as not worth pursuing further right now. Deliberately
-narrow: `RECEIVES_EVENTS` is UNCHANGED, still rejected outright — this
-is not a general "Healer now executes actionability strategies"
-change. `attempt_heal()`'s return contract stays a bare selector string
+Sprint 8 (Option A, narrowed) — that changes for TWO cases:
+`ActionabilityReason.VISIBLE` (both prompt-restricted strategies) and
+`ActionabilityReason.RECEIVES_EVENTS`'s `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY`
+only — `DISMISS_BLOCKER` (`RECEIVES_EVENTS`'s third allowed strategy)
+remains explicitly rejected, since `actionability_policy.py` does not
+yet validate `blocking_element` against the live DOM at all; executing
+it would mean parsing a raw HTML string from the model and clicking
+whatever that produces with no deterministic check that it's real.
+Decided per direct discussion, after `VISIBLE`'s narrow execution was
+live-verified: widen to the one further case that reuses the SAME
+execution machinery unchanged (a wait, then retry with the original
+selector), not to every strategy every reason can produce. Deliberately
+narrow: `SCROLL_INTO_VIEW`/`FORCE_NOT_ALLOWED` and `DISMISS_BLOCKER`
+are unchanged, still rejected outright — this is not a general "Healer
+now executes actionability strategies" change. `attempt_heal()`'s return contract stays a bare selector string
 (no `BasePage` changes): for `WAIT_AND_RETRY`, `Healer` waits
 internally (`page.wait_for_timeout()`, capped at
 `MAX_ACTIONABILITY_WAIT_MS`) and returns the ORIGINAL, unchanged
@@ -59,7 +64,7 @@ from playwright.sync_api import Page
 from config.settings import Settings
 from phoenix.ai.provider_factory import get_provider
 from phoenix.collector.context_collector import ContextCollector
-from phoenix.collector.failure_classifier import ActionabilityReason
+from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.actions import ActionabilityStrategy, ActionabilityStrategyKind, SelectorReplacement
 from phoenix.healing.autonomous_policy import AutonomousPolicy, HealingBudget, HealLifecycleTimer
 from phoenix.healing.decision_logger import log_decision
@@ -161,8 +166,12 @@ class Healer:
 
         action = result.action
 
-        if isinstance(action, ActionabilityStrategy) and action.reason == ActionabilityReason.VISIBLE:
-            return self._execute_visible_strategy_safe(context, action, result)
+        if (
+            isinstance(action, ActionabilityStrategy)
+            and context.category == FailureCategory.ACTIONABILITY
+            and action.reason in (ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS)
+        ):
+            return self._execute_wait_and_retry_safe(context, action, result)
 
         if not isinstance(action, SelectorReplacement):
             # Only SelectorReplacement is implemented end-to-end today —
@@ -264,8 +273,12 @@ class Healer:
             output_tokens=result.output_tokens,
         )
 
-        if isinstance(action, ActionabilityStrategy) and action.reason == ActionabilityReason.VISIBLE:
-            return self._execute_visible_strategy_autonomous(context, action, result, timer)
+        if (
+            isinstance(action, ActionabilityStrategy)
+            and context.category == FailureCategory.ACTIONABILITY
+            and action.reason in (ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS)
+        ):
+            return self._execute_wait_and_retry_autonomous(context, action, result, timer)
 
         if not isinstance(action, SelectorReplacement):
             # Budget is already spent above — a real attempt happened,
@@ -329,17 +342,22 @@ class Healer:
         self.page.wait_for_timeout(wait_ms)
         return broken_selector
 
-    def _execute_visible_strategy_safe(self, context, action: ActionabilityStrategy, result) -> str:
+    def _execute_wait_and_retry_safe(self, context, action: ActionabilityStrategy, result) -> str:
         """
         Safe Mode counterpart to `_attempt_heal_safe`'s SelectorReplacement
-        path, for ActionabilityReason.VISIBLE only (see module docstring
-        and `request_human_review_actionability()`'s own docstring for
-        the full scope reasoning). `request_human_review_actionability()`
-        already auto-rejects (no prompt) for NO_SAFE_RECOVERY and for any
-        strategy kind outside the two VISIBLE supports — by the time
-        `accepted` is True here, `action.strategy` is guaranteed to be
-        WAIT_AND_RETRY, but the explicit check below stays anyway rather
-        than relying on that as an unstated contract.
+        path, for `ActionabilityReason.VISIBLE` and `RECEIVES_EVENTS`
+        (see module docstring and `request_human_review_actionability()`'s
+        own docstring for the full scope reasoning). Despite the name,
+        this executes ONE strategy (`WAIT_AND_RETRY`) shared by both
+        reasons — `RECEIVES_EVENTS`' third allowed strategy,
+        `DISMISS_BLOCKER`, is NOT executed here or anywhere yet (see the
+        explicit check below and the module docstring for why).
+        `request_human_review_actionability()` already auto-rejects (no
+        prompt) for `NO_SAFE_RECOVERY` and for any strategy kind outside
+        `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` — by the time `accepted` is
+        True here, `action.strategy` is guaranteed to be `WAIT_AND_RETRY`,
+        but the explicit check below stays anyway rather than relying on
+        that as an unstated contract.
         """
         accepted = request_human_review_actionability(context, action)
         log_decision(
@@ -360,12 +378,13 @@ class Healer:
         if action.strategy != ActionabilityStrategyKind.WAIT_AND_RETRY:
             raise HealingRejectedError(
                 f"Accepted strategy '{action.strategy}' has no execution path "
-                f"yet — only wait_and_retry is implemented for VISIBLE."
+                f"yet — only wait_and_retry is implemented "
+                f"(for VISIBLE and RECEIVES_EVENTS)."
             )
 
         return self._wait_and_return_original(context.broken_selector, action)
 
-    def _execute_visible_strategy_autonomous(
+    def _execute_wait_and_retry_autonomous(
         self, context, action: ActionabilityStrategy, result, timer: HealLifecycleTimer
     ) -> str:
         """
@@ -374,8 +393,10 @@ class Healer:
         attempt is still on record), then the same two gates that path
         already applies — full-lifecycle time budget, then confidence
         threshold — plus a strategy-kind check specific to this path,
-        since NO_SAFE_RECOVERY/anything else has nothing to execute even
-        at full confidence.
+        since NO_SAFE_RECOVERY/DISMISS_BLOCKER/anything else has nothing
+        to execute even at full confidence. Shared by `VISIBLE` and
+        `RECEIVES_EVENTS` — see `_execute_wait_and_retry_safe`'s
+        docstring for why `DISMISS_BLOCKER` specifically stays excluded.
         """
         strategy_ok = action.strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
         log_decision(
