@@ -46,7 +46,8 @@ export function LoginForm({
   componentRemountMinMs,
   componentRemountMaxMs,
   componentRemountTrigger,
-  pointerEventsOverlayEnabled = false,
+  pointerEventsOverlayMode = 'off',
+  pointerEventsOverlayMs,
   visibilityDelayMode = 'off',
   visibilityDelayMs,
 }) {
@@ -115,7 +116,7 @@ export function LoginForm({
           />
         </VisibilityDelayWrapper>
 
-        <PointerEventsOverlay active={pointerEventsOverlayEnabled}>
+        <PointerEventsOverlay mode={pointerEventsOverlayMode} delayMs={pointerEventsOverlayMs}>
           <ComponentRemountWrapper
             active={componentRemountEnabled}
             trigger={componentRemountTrigger || RemountTrigger.TIMEOUT}

@@ -225,7 +225,7 @@ A 5th, independent mechanism, **component remount / detach-mid-action** (`compon
 
 Two more independent mechanisms were built in Sprint 6B, specifically to give `ActionabilityReason.RECEIVES_EVENTS` and `.VISIBLE` real, deterministic ground truth to classify against — both are live and verified:
 
-- **`pointerEventsOverlay.jsx`** (`VITE_POINTER_EVENTS_OVERLAY_ENABLED`) — a transparent, full-viewport overlay that intercepts every click, simulating a real cookie banner / modal / sticky header blocking a click.
+- **`pointerEventsOverlay.jsx`** (`VITE_POINTER_EVENTS_OVERLAY_MODE=off|permanent|transient`, `VITE_POINTER_EVENTS_OVERLAY_MS`) — a transparent, full-viewport overlay that intercepts every click, simulating a real cookie banner / modal / sticky header blocking a click. `permanent` never removes itself (ground truth: `no_safe_recovery`); `transient` unmounts after the configured delay (ground truth: `wait_and_retry`) — added (Sprint 8) mirroring `visibilityDelay.jsx`'s two-mode split, once `Healer`'s execution widened to cover `RECEIVES_EVENTS` too. Unlike `VISIBLE`'s evidence, this one isn't a narrow timing window — `RECEIVES_EVENTS`' evidence is a declared CSS capability checked once, not an observed change, so there's no tight margin to tune here.
 - **`visibilityDelay.jsx`** (`VITE_VISIBILITY_DELAY_MODE=off|permanent|transient`, `VITE_VISIBILITY_DELAY_MS`) — hides the password input via `visibility: hidden`. `permanent` never reveals it (ground truth: `no_safe_recovery`); `transient` reveals it after the configured delay (ground truth: `wait_and_retry`) — the first mechanism built to test **both directions** of the policy guardrail live. Important: `VITE_VISIBILITY_DELAY_MS` must land INSIDE `ActionabilityCollector`'s fixed observation window (`[T, T+1200]` where `T ≈` Playwright's own `fill()` timeout, `30000ms` by default) — not merely exceed `30000ms`, and not too far past it either. `30500` is intermittent (system-jitter-dependent), `32000` misses deterministically (past the window entirely). **Working value: `30800`.** See `docs/known-limitations.md` and `LEARNINGS.md`'s "[Verification] Margin correction" entry for the full reasoning.
 
 **Controlling the chaos level:**
@@ -235,7 +235,7 @@ Two more independent mechanisms were built in Sprint 6B, specifically to give `A
 VITE_CHAOS_LEVEL=HIGH                      # LOW | MEDIUM | HIGH
 VITE_SHADOW_DOM_ENABLED=true               # true | false — independent of level
 VITE_COMPONENT_REMOUNT_ENABLED=false       # true | false — independent of level, see note above
-VITE_POINTER_EVENTS_OVERLAY_ENABLED=false  # true | false — independent of level, ActionabilityReason.RECEIVES_EVENTS
+VITE_POINTER_EVENTS_OVERLAY_MODE=off       # off | permanent | transient — independent of level, ActionabilityReason.RECEIVES_EVENTS
 VITE_VISIBILITY_DELAY_MODE=off             # off | permanent | transient — independent of level, ActionabilityReason.VISIBLE
 ```
 

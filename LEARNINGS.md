@@ -5178,7 +5178,69 @@ draws every time. Live verification would need
 model genuinely proposes `wait_and_retry` (e.g. an animated overlay
 that disappears on its own) — not yet attempted.
 
+### [Implementation] `pointerEventsOverlay.jsx` gains a TRANSIENT mode — enables live verification of `RECEIVES_EVENTS`' `WAIT_AND_RETRY`
+
+Motivated directly by trying to plan `RECEIVES_EVENTS`' live
+verification (the open item from widening `Healer`'s execution scope):
+`pointerEventsOverlay.jsx` had only ever been PERMANENT — no timer, no
+animation, no way for it to go away — meaning the ONLY ground truth
+this mechanism could ever produce was `no_safe_recovery`. Live-testing
+the newly-widened `WAIT_AND_RETRY` path for `RECEIVES_EVENTS` was
+structurally impossible with the existing mechanism, not just
+untried. Per direct discussion ("Fenix to projekt badawczy, dygresji w
+nim pełno") — build the mechanism needed rather than settle for
+partial verification.
+
+Mirrors `visibilityDelay.jsx`'s `PERMANENT`/`TRANSIENT` split
+deliberately, not a new shape: `PointerEventsOverlayMode.TRANSIENT`
+declares `transitionProperty: 'opacity'`/`transitionDuration` on the
+overlay (the exact evidence `actionability_policy.py`'s
+`_has_positive_transient_evidence()` checks — `transitionProperty`
+present and not the browser default) while active, then genuinely
+UNMOUNTS the overlay (not merely fades it) via a real `setTimeout`
+once `delayMs` elapses — a retried click after that point reaches the
+button for real, not just in appearance.
+
+**A genuinely easier timing problem than `VISIBLE`'s, confirmed by
+re-reading the actual validator code before assuming otherwise:**
+`RECEIVES_EVENTS`' evidence is a DECLARED CSS capability, checked in
+one snapshot — not `VISIBLE`'s two-snapshot OBSERVED CHANGE across a
+narrow, fixed-width window. There's no `[T, T+1200ms]`-style interval
+to land inside here. The overlay just needs to have actually
+disappeared by the time `Healer`'s retry happens — and that retry
+happens well after Playwright's own `click()` timeout (`10000ms`
+default) PLUS the LLM round-trip (typically 5-15s) PLUS
+`suggested_wait_ms` (~1200ms), i.e. tens of seconds later. A `delayMs`
+of `3000-5000ms` has enormous, comfortable margin — nothing like
+`VISIBLE`'s `500ms`-out-of-`1200ms` tightrope.
+
+Migration, not an addition alongside the old API: `active: boolean` →
+`mode: 'off'|'permanent'|'transient'` + `delayMs`, matching
+`visibilityDelay.jsx`'s exact prop shape. `VITE_POINTER_EVENTS_OVERLAY_ENABLED`
+→ `VITE_POINTER_EVENTS_OVERLAY_MODE`/`VITE_POINTER_EVENTS_OVERLAY_MS`
+threaded through `chaosConfig.js` → `App.jsx` → `LoginForm.jsx`
+consistently — a clean rename, not a second parallel flag left
+dangling. `chaos_app/.env.example` and `README.md` updated to match;
+also caught and fixed a genuinely stale value while touching this
+section — `.env.example` still recommended `VITE_VISIBILITY_DELAY_MS=30500`
+for `VISIBLE`, the value already proven intermittent and superseded by
+`30800` in an earlier entry this same sprint.
+
+**Verified via a real `npm run build`** (Vite, 42 modules), not just
+visual inspection — confirmed the new prop name reaches the bundled
+output and the old one is completely gone from it (`grep` on the built
+JS), rather than trusting that a rename touched every call site by
+eye. `dist/`/`node_modules/` cleaned up after, not committed (already
+gitignored).
+
+**Not yet done: the actual live pytest run.** This entry is the Chaos
+App mechanism existing and building cleanly — the live verification of
+`RECEIVES_EVENTS`' `WAIT_AND_RETRY` execution it was built to enable
+has not happened yet. That remains the next concrete step.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5260,6 +5322,18 @@ that disappears on its own) — not yet attempted.
   `RECEIVES_EVENTS` specifically** — reuses `VISIBLE`'s already-verified
   machinery unchanged, but only confirmed against mocks so far. See
   [Implementation] "Execution widened to RECEIVES_EVENTS" above
+- ~~Build a TRANSIENT variant of `pointerEventsOverlay.jsx`~~ — DONE.
+  `PointerEventsOverlayMode.TRANSIENT` mirrors `visibilityDelay.jsx`'s
+  pattern, unmounts the overlay for real after `delayMs`, declares
+  real `transitionProperty` evidence while active. Migration, not an
+  addition: `active: boolean` → `mode`/`delayMs` threaded consistently
+  through `chaosConfig.js`/`App.jsx`/`LoginForm.jsx`. Verified via a
+  real `npm run build` (42 modules, clean), not just inspection. Also
+  fixed a stale `30500` recommendation for `VITE_VISIBILITY_DELAY_MS`
+  in `chaos_app/.env.example`, missed in an earlier doc-only pass.
+  **The actual live pytest run this mechanism was built to enable —
+  not yet done.** See [Implementation] "pointerEventsOverlay.jsx gains
+  a TRANSIENT mode" above
 
 ---
 
@@ -5333,3 +5407,4 @@ that disappears on its own) — not yet attempted.
 - Sprint 8 Option A margin: CORRECTED AND CONFIRMED — `32000` (the previous recommendation) was based on wrong reasoning about how the observation window works (treated as open-ended, actually fixed-width `[T, T+1200]`) and made results WORSE (0/2, deterministic miss). Correct value: `VITE_VISIBILITY_DELAY_MS=30800` (middle of the window, not past its edge) — re-tested, 2/2 passed consistently. Option A (narrowed) is now genuinely, reliably verified end-to-end, not just observed once. See `LEARNINGS.md` "[Verification] Margin correction"
 - Sprint 8 Option A Safe Mode UX: LIVE-CONFIRMED — `request_human_review_actionability()` renders correctly in a real terminal, accept path works identically to Autonomous Mode's execution. Reject path (`n`) not yet exercised live (unit-tested only) — minor coverage gap, not an open correctness question. See `LEARNINGS.md` "[Verification] confirmed live in a real terminal"
 - Sprint 8 Option A widened to `RECEIVES_EVENTS`: DONE — `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` execution now shared by both `VISIBLE` and `RECEIVES_EVENTS` (`DISMISS_BLOCKER` still excluded, no DOM-validated guardrail exists for it). Methods renamed `_execute_wait_and_retry_safe/_autonomous` to stop lying about scope. Caught and fixed a real gap via a new test: `action.reason` wasn't cross-checked against `context.category`, now fixed with an explicit `FailureCategory.ACTIONABILITY` guard. 188/188 full suite, pyflakes clean. **Not yet live-verified for `RECEIVES_EVENTS`** — next step. See `LEARNINGS.md` "[Implementation] Execution widened to RECEIVES_EVENTS"
+- Chaos App: `pointerEventsOverlay.jsx` gained a TRANSIENT mode (mirrors `visibilityDelay.jsx`) — `RECEIVES_EVENTS`' `WAIT_AND_RETRY` had NO way to be live-tested before this, since the overlay was permanent-only. Migration (not addition): `active` boolean → `mode`/`delayMs`, threaded consistently, verified via a real `npm run build`. Also fixed a stale `30500` recommendation for `VITE_VISIBILITY_DELAY_MS` in `chaos_app/.env.example`. **The actual live pytest run — still not done.** See `LEARNINGS.md` "[Implementation] pointerEventsOverlay.jsx gains a TRANSIENT mode"

@@ -37,7 +37,8 @@ function App() {
               : ''}
           </li>
           <li>
-            Pointer Events Overlay (Sprint 6B, RECEIVES_EVENTS): {config.pointerEventsOverlayEnabled ? 'enabled' : 'disabled'}
+            Pointer Events Overlay (Sprint 6B/8, RECEIVES_EVENTS): {config.pointerEventsOverlayMode}
+            {config.pointerEventsOverlayMode === 'transient' ? ` (${config.pointerEventsOverlayMs ?? 1000}ms)` : ''}
           </li>
           <li>
             Visibility Delay (Sprint 6B, VISIBLE): {config.visibilityDelayMode}
@@ -53,7 +54,8 @@ function App() {
           componentRemountMinMs={config.componentRemountMinMs}
           componentRemountMaxMs={config.componentRemountMaxMs}
           componentRemountTrigger={config.componentRemountTrigger}
-          pointerEventsOverlayEnabled={config.pointerEventsOverlayEnabled}
+          pointerEventsOverlayMode={config.pointerEventsOverlayMode}
+          pointerEventsOverlayMs={config.pointerEventsOverlayMs}
           visibilityDelayMode={config.visibilityDelayMode}
           visibilityDelayMs={config.visibilityDelayMs}
         />

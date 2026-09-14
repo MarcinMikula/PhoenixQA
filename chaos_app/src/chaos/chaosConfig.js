@@ -193,11 +193,17 @@ export function getChaosConfigFromEnv() {
   const componentRemountTrigger =
     import.meta.env.VITE_COMPONENT_REMOUNT_TRIGGER || undefined
 
-  // Sprint 6B — independent flag, same pattern again. Defaults to false
-  // so existing runs (Sprint 1-6A) are unaffected unless explicitly
-  // opted in.
-  const pointerEventsOverlayEnabled =
-    import.meta.env.VITE_POINTER_EVENTS_OVERLAY_ENABLED === 'true'
+  // Sprint 6B — independent flag, same pattern again. Sprint 8: widened
+  // from a plain boolean ('enabled'/not) to 'off'/'permanent'/'transient',
+  // mirroring visibilityDelayMode exactly — this mechanism now has two
+  // ground truths to test live, same reasoning that motivated
+  // visibilityDelay.jsx's own two-mode split. Defaults to 'off'.
+  const pointerEventsOverlayMode =
+    import.meta.env.VITE_POINTER_EVENTS_OVERLAY_MODE || 'off'
+
+  const pointerEventsOverlayMs = import.meta.env.VITE_POINTER_EVENTS_OVERLAY_MS
+    ? parseInt(import.meta.env.VITE_POINTER_EVENTS_OVERLAY_MS, 10)
+    : undefined
 
   // Sprint 6B, second ActionabilityReason — independent flag, same
   // pattern again, but 'off'/'permanent'/'transient' rather than a
@@ -222,7 +228,8 @@ export function getChaosConfigFromEnv() {
     componentRemountMinMs,
     componentRemountMaxMs,
     componentRemountTrigger,
-    pointerEventsOverlayEnabled,
+    pointerEventsOverlayMode,
+    pointerEventsOverlayMs,
     visibilityDelayMode,
     visibilityDelayMs,
   }
