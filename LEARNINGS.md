@@ -5238,7 +5238,67 @@ App mechanism existing and building cleanly — the live verification of
 `RECEIVES_EVENTS`' `WAIT_AND_RETRY` execution it was built to enable
 has not happened yet. That remains the next concrete step.
 
+### [Verification] Live confirmation: `RECEIVES_EVENTS`' `WAIT_AND_RETRY` execution works end-to-end
+
+First live run against the new `pointerEventsOverlay.jsx` TRANSIENT
+mode. Took two attempts to get the config right — both informative.
+
+**First attempt — `VITE_POINTER_EVENTS_OVERLAY_MS=3000` — both tests
+passed in a suspiciously fast 10.4s total.** Too fast to be real
+healing: `click()`'s own timeout alone is `10000ms`, so a single
+genuine healing cycle couldn't finish in that time. Root cause,
+diagnosed before touching any code: `delayMs` is measured from
+component MOUNT (page load), not from the moment `click()` is first
+attempted — and `login()` fills two fields before ever clicking. If
+navigation + both fills took longer than `3000ms` (plausible on a dev
+server), the overlay had already unmounted itself before `click()`
+ever started, so the click just succeeded immediately — `Healer` never
+engaged at all. A mirror-image mistake to `VISIBLE`'s margin problem
+(Gap #15 Threat 1 again, opposite direction): there, the delay was too
+LONG relative to when the retry happens; here, too SHORT relative to
+when the action first starts.
+
+**Second attempt — `VITE_POINTER_EVENTS_OVERLAY_MS=15000` — 2/2
+passed, 54.07s total, timing consistent with genuine healing.**
+`healing_decisions.log` confirms exactly what this slice was built to
+prove: `"failure_category": "actionability"`,
+`"actionability_reason": "receives_events"`, `"strategy":
+"wait_and_retry"`, `"accepted": true`, `"mode": "autonomous"`, on both
+entries — the first live confirmation of `RECEIVES_EVENTS`' widened
+execution path (see "[Implementation] Execution widened to
+RECEIVES_EVENTS" above), not just `VISIBLE`'s.
+
+**A minor model-consistency curiosity, not a bug:** the model's own
+`reasoning` correctly read the overlay's declared duration —
+*"a transition effect suggesting it will disappear after 15
+seconds"* — but its `suggested_wait_ms` was only `3000`, inconsistent
+with its own stated diagnosis. Didn't matter for this run: by the time
+`Healer` even reaches the wait step, `click()`'s own `10000ms` timeout
+plus the LLM round-trip (`16187ms`/`8577ms` here) had already consumed
+`26187ms`/`18577ms` — well past the overlay's `15000ms` lifetime —
+so the additional `3000ms` wait was redundant padding on an
+already-resolved situation, not the thing that made the retry work.
+Worth remembering as a general caution for reading `suggested_wait_ms`
+too literally as "the model's timing judgment was correct" — the
+pipeline's own latency did the real work here.
+
+Corrected `chaos_app/.env.example` and `README.md` still needed no
+further changes — this confirms the reasoning already written when
+`VITE_POINTER_EVENTS_OVERLAY_MS`'s comment was drafted (favor a value
+with margin on both sides, `3000-5000ms` suggested as "comfortable" was
+itself too low — `15000` is the confirmed working value, closer to
+`VISIBLE`'s `30800` in spirit: a value found by testing, not derived
+purely from arithmetic in advance). `chaos_app/.env.example`'s comment
+range should be corrected in a follow-up doc pass.
+
+This completes Sprint 8 Option A's widening to `RECEIVES_EVENTS`: both
+reasons that support `WAIT_AND_RETRY` are now live-verified, not just
+unit-tested. `DISMISS_BLOCKER` remains the one deliberately
+unaddressed strategy — still proposal-only, by design.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5334,6 +5394,16 @@ has not happened yet. That remains the next concrete step.
   **The actual live pytest run this mechanism was built to enable —
   not yet done.** See [Implementation] "pointerEventsOverlay.jsx gains
   a TRANSIENT mode" above
+- ~~The actual live pytest run~~ — DONE, 2/2 passed. Took two attempts:
+  `VITE_POINTER_EVENTS_OVERLAY_MS=3000` was too short (overlay
+  vanished before `click()` was even first attempted, `Healer` never
+  engaged); `15000` gave margin on both sides and confirmed
+  `RECEIVES_EVENTS`' `WAIT_AND_RETRY` execution end-to-end
+  (`healing_decisions.log`: `strategy: wait_and_retry`,
+  `accepted: true`, `mode: autonomous`, both entries). Sprint 8 Option
+  A's widening to `RECEIVES_EVENTS` is now genuinely complete — both
+  reasons live-verified, not just `VISIBLE`. See [Verification] "Live
+  confirmation: RECEIVES_EVENTS' WAIT_AND_RETRY execution" above
 
 ---
 
@@ -5408,3 +5478,4 @@ has not happened yet. That remains the next concrete step.
 - Sprint 8 Option A Safe Mode UX: LIVE-CONFIRMED — `request_human_review_actionability()` renders correctly in a real terminal, accept path works identically to Autonomous Mode's execution. Reject path (`n`) not yet exercised live (unit-tested only) — minor coverage gap, not an open correctness question. See `LEARNINGS.md` "[Verification] confirmed live in a real terminal"
 - Sprint 8 Option A widened to `RECEIVES_EVENTS`: DONE — `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` execution now shared by both `VISIBLE` and `RECEIVES_EVENTS` (`DISMISS_BLOCKER` still excluded, no DOM-validated guardrail exists for it). Methods renamed `_execute_wait_and_retry_safe/_autonomous` to stop lying about scope. Caught and fixed a real gap via a new test: `action.reason` wasn't cross-checked against `context.category`, now fixed with an explicit `FailureCategory.ACTIONABILITY` guard. 188/188 full suite, pyflakes clean. **Not yet live-verified for `RECEIVES_EVENTS`** — next step. See `LEARNINGS.md` "[Implementation] Execution widened to RECEIVES_EVENTS"
 - Chaos App: `pointerEventsOverlay.jsx` gained a TRANSIENT mode (mirrors `visibilityDelay.jsx`) — `RECEIVES_EVENTS`' `WAIT_AND_RETRY` had NO way to be live-tested before this, since the overlay was permanent-only. Migration (not addition): `active` boolean → `mode`/`delayMs`, threaded consistently, verified via a real `npm run build`. Also fixed a stale `30500` recommendation for `VITE_VISIBILITY_DELAY_MS` in `chaos_app/.env.example`. **The actual live pytest run — still not done.** See `LEARNINGS.md` "[Implementation] pointerEventsOverlay.jsx gains a TRANSIENT mode"
+- Sprint 8 Option A `RECEIVES_EVENTS` widening: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end (2/2, `healing_decisions.log` shows `receives_events`/`wait_and_retry`/`accepted:true`/`autonomous`). First attempt (`VITE_POINTER_EVENTS_OVERLAY_MS=3000`) too short — overlay vanished before `click()` was first attempted at all, mirror-image of `VISIBLE`'s margin mistake in the opposite direction. Corrected to `15000`, works. Curiosity: model's `suggested_wait_ms=3000` didn't match its own stated "15 seconds" reasoning, but pipeline latency (click timeout + LLM round-trip) already exceeded the overlay's lifetime by the time the wait even started, so it didn't matter. See `LEARNINGS.md` "[Verification] Live confirmation: RECEIVES_EVENTS' WAIT_AND_RETRY execution"

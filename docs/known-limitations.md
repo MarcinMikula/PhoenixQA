@@ -168,6 +168,25 @@ boundary, just an incomplete-coverage one:
   (`_VISIBLE_OBSERVATION_WINDOW_MS` and Playwright's `fill()` default
   timeout) — changing either without updating this one will silently
   break the scenario again.
+- **`VITE_POINTER_EVENTS_OVERLAY_MS` must outlast navigation + both
+  form fills, not just be "long enough" in the abstract — confirmed
+  live (Sprint 8).** The delay is measured from `pointerEventsOverlay.jsx`'s
+  component MOUNT (page load), but `ChaosLoginPage.login()` fills the
+  username and password fields BEFORE clicking — so the overlay's
+  countdown is already running while those fills happen. `3000ms`
+  caused a false-negative-shaped bug, not an actionability-classification
+  one: the overlay vanished before `click()` was ever first attempted at
+  all, so `Healer` never engaged and both tests passed for the wrong
+  reason (no chaos was actually exercised, not "chaos was correctly
+  healed"). Unlike `VITE_VISIBILITY_DELAY_MS` above, there's no narrow
+  window to land inside — `RECEIVES_EVENTS`' evidence is a declared CSS
+  capability checked once, not an observed change — so once the value
+  is comfortably larger than navigation+fills and comfortably smaller
+  than `click()`'s `10000ms` timeout + the LLM round-trip, it works.
+  **Working value, confirmed live 2/2:
+  `VITE_POINTER_EVENTS_OVERLAY_MS=15000`** — see `LEARNINGS.md`'s
+  "[Verification] Live confirmation: RECEIVES_EVENTS' WAIT_AND_RETRY
+  execution" entry.
 - **`pytest -s` is required for Safe Mode to work at all.** Without it,
   pytest captures stdin/stdout and the human-review `input()` prompt
   never reaches the terminal — the run just hangs with no explanation.
