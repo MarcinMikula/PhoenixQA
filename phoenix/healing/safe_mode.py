@@ -80,7 +80,8 @@ def request_human_review_actionability(context: HealingContext, action: Actionab
     an empty "Proposed selector:" line for every actionability review would
     be confusing, not just cosmetically different.
 
-    Scope: called for ActionabilityReason.VISIBLE and RECEIVES_EVENTS
+    Scope: called for ActionabilityReason.VISIBLE, RECEIVES_EVENTS, and
+    ENABLED
     (see healer.py) — the two strategies shared between them,
     WAIT_AND_RETRY and NO_SAFE_RECOVERY, are both handled explicitly
     below. Any other ActionabilityStrategyKind reaching this function
