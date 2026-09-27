@@ -152,6 +152,56 @@ def validate_visible_strategy(
     )
 
 
+def validate_enabled_strategy(
+    strategy: ActionabilityStrategy, context: HealingContext
+) -> ActionabilityStrategy:
+    """
+    ActionabilityReason.ENABLED: reuses VISIBLE's evidence STANDARD
+    directly, not a new design — per direct discussion, decided before
+    writing this function. "Disabled → enabled" is the same SHAPE of
+    fact as "hidden → visible": an observed change in a DOM property
+    across two real snapshots, checked via
+    collector_metadata["target_state_changed_during_observation"] (the
+    SAME metadata key VISIBLE's validator reads — ActionabilityCollector's
+    _collect_enabled_context() populates it with the identical meaning,
+    just computed from `disabled` instead of
+    visibility/display/opacity/bounding-box). See
+    actionability_collector.py's module docstring ("ENABLED REUSES
+    VISIBLE'S TEMPORAL MODEL") for the full reasoning.
+
+    A separate function from validate_visible_strategy(), not a shared
+    call with a different metadata_key, unlike _validate_wait_and_retry()'s
+    relationship to RECEIVES_EVENTS — because the POLICY REASON text
+    genuinely differs (naming "disabled" specifically matters for a
+    human/log reader diagnosing a rejection), even though the underlying
+    metadata field and logic are identical. Duplicated logic, not
+    duplicated meaning — kept separate deliberately rather than
+    parameterizing a message string too.
+    """
+    if strategy.strategy != ActionabilityStrategyKind.WAIT_AND_RETRY:
+        return strategy
+
+    metadata = context.collector_metadata or {}
+    state_changed = metadata.get("target_state_changed_during_observation", False)
+
+    if state_changed:
+        return strategy
+
+    return replace(
+        strategy,
+        strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+        corrected_by_policy=True,
+        original_strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+        policy_reason=(
+            "WAIT_AND_RETRY requires the target element's observed "
+            "`disabled` state to have actually changed during collection "
+            f"(a {metadata.get('observation_window_ms', '?')}ms "
+            "observation window) — no change was observed, so there is no "
+            "basis to believe waiting longer would help."
+        ),
+    )
+
+
 def _validate_wait_and_retry(
     strategy: ActionabilityStrategy, context: HealingContext, metadata_key: str
 ) -> ActionabilityStrategy:
