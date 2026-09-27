@@ -95,6 +95,28 @@ def _make_visible_context(with_transient_evidence: bool = False):
     )
 
 
+def _make_enabled_context(with_transient_evidence: bool = False):
+    state_t0 = {"disabled": True}
+    state_t1 = {"disabled": False} if with_transient_evidence else dict(state_t0)
+
+    return HealingContext(
+        broken_selector="[data-testid='btn-login-x7f2']",
+        error_message="Locator.click: ... element is not enabled",
+        dom_snapshot="Target element (exists in the DOM but is not enabled):\n<button>",
+        page_url="http://localhost:5173/",
+        original_code="click",
+        category=FailureCategory.ACTIONABILITY,
+        actionability_reason=ActionabilityReason.ENABLED,
+        collector_metadata={
+            "target_outer_html": '<button data-testid="btn-login-x7f2">Log in</button>',
+            "target_state_t0": state_t0,
+            "target_state_t1": state_t1,
+            "observation_window_ms": 1200,
+            "target_state_changed_during_observation": with_transient_evidence,
+        },
+    )
+
+
 def _mock_ollama_http(monkeypatch, raw_response_text: str, prompt_eval_count=800, eval_count=120):
     """Mocks both the health-check GET and the /api/generate POST so no
     real network call happens. Returns the mock for post so a test can
@@ -300,6 +322,84 @@ class TestOllamaProviderVisible:
 
         provider = OllamaProvider(_make_settings())
         result = provider.analyze_failure(_make_visible_context())
+
+        assert isinstance(result.action, ActionabilityStrategy)
+        assert result.action.confidence == 0.0
+        assert result.action.strategy.value == "no_safe_recovery"
+
+
+@pytest.mark.unit
+class TestOllamaProviderEnabled:
+    # Sprint 8, third ActionabilityReason. Mirrors
+    # TestOllamaProviderVisible's structure exactly — same guardrail
+    # shape (validate_enabled_strategy reuses VISIBLE's evidence
+    # standard), different prompt/parser pair.
+
+    def test_uses_enabled_prompt_and_parser(self, monkeypatch):
+        raw = (
+            '{"strategy": "no_safe_recovery", "confidence": 0.75, '
+            '"reasoning": "disabled at both observations, nothing changed.", '
+            '"suggested_wait_ms": null, "blocking_element": null}'
+        )
+        post_mock = _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        result = provider.analyze_failure(_make_enabled_context())
+
+        assert isinstance(result.action, ActionabilityStrategy)
+        assert result.action.strategy.value == "no_safe_recovery"
+        assert result.action.reason == ActionabilityReason.ENABLED
+
+        sent_payload = post_mock.call_args.kwargs["json"]
+        assert "not enabled" in sent_payload["system"].lower()
+        assert "btn-login-x7f2" in sent_payload["prompt"]
+
+    def test_wait_and_retry_without_evidence_is_corrected_by_policy(self, monkeypatch, caplog):
+        raw = (
+            '{"strategy": "wait_and_retry", "confidence": 0.80, '
+            '"reasoning": "May become enabled soon.", '
+            '"suggested_wait_ms": 500, "blocking_element": null}'
+        )
+        _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        with caplog.at_level("DEBUG", logger="phoenix.ai.ollama_provider"):
+            result = provider.analyze_failure(_make_enabled_context(with_transient_evidence=False))
+
+        assert result.action.strategy.value == "no_safe_recovery"
+        assert result.action.corrected_by_policy is True
+
+        messages = [r.message for r in caplog.records]
+        assert any("strategy=wait_and_retry" in m for m in messages)
+        assert any("Policy corrected ActionabilityStrategy" in m for m in messages)
+
+    def test_wait_and_retry_with_real_evidence_passes_through_uncorrected(self, monkeypatch, caplog):
+        # The guardrail's OTHER direction for ENABLED, at the provider
+        # level: collector_metadata genuinely shows disabled flipping
+        # from True to False, so the model's wait_and_retry proposal
+        # must reach the caller unmodified.
+        raw = (
+            '{"strategy": "wait_and_retry", "confidence": 0.80, '
+            '"reasoning": "disabled actually changed from true to false.", '
+            '"suggested_wait_ms": 1200, "blocking_element": null}'
+        )
+        _mock_ollama_http(monkeypatch, raw)
+
+        provider = OllamaProvider(_make_settings())
+        with caplog.at_level("DEBUG", logger="phoenix.ai.ollama_provider"):
+            result = provider.analyze_failure(_make_enabled_context(with_transient_evidence=True))
+
+        assert result.action.strategy.value == "wait_and_retry"
+        assert result.action.corrected_by_policy is False
+
+        messages = [r.message for r in caplog.records]
+        assert not any("Policy corrected ActionabilityStrategy" in m for m in messages)
+
+    def test_malformed_response_still_returns_a_typed_result_not_a_crash(self, monkeypatch):
+        _mock_ollama_http(monkeypatch, "not valid json at all")
+
+        provider = OllamaProvider(_make_settings())
+        result = provider.analyze_failure(_make_enabled_context())
 
         assert isinstance(result.action, ActionabilityStrategy)
         assert result.action.confidence == 0.0
