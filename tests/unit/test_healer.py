@@ -515,6 +515,67 @@ class TestHealerVisibleStrategyExecution:
         assert result == "[data-testid='btn-submit']"
         healer.page.wait_for_timeout.assert_called_once_with(1200)
 
+    def test_enabled_wait_and_retry_executes_scope_widened(self, tmp_path, monkeypatch):
+        # Sprint 8, third reason widened into the SAME shared execution
+        # machinery — no new Healer logic needed, only the scope check's
+        # tuple grew (see healer.py's two isinstance/reason guards).
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        context = HealingContext(
+            broken_selector="[data-testid='btn-login-x7f2']",
+            error_message="Locator.click: Timeout 10000ms exceeded.",
+            dom_snapshot="<button disabled>...</button>",
+            page_url="http://localhost:5173/",
+            original_code="click",
+            category=FailureCategory.ACTIONABILITY,
+            actionability_reason=ActionabilityReason.ENABLED,
+        )
+        healer.collector.collect.return_value = context
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=0.85,
+                reasoning="disabled actually changed from true to false",
+                reason=ActionabilityReason.ENABLED,
+                strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+                suggested_wait_ms=1200,
+            )
+        )
+
+        result = healer.attempt_heal(
+            "[data-testid='btn-login-x7f2']", Exception("timeout"), "click"
+        )
+
+        assert result == "[data-testid='btn-login-x7f2']"
+        healer.page.wait_for_timeout.assert_called_once_with(1200)
+
+    def test_enabled_no_safe_recovery_still_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        healer = _make_healer(healing_mode="autonomous")
+        context = HealingContext(
+            broken_selector="[data-testid='btn-login-x7f2']",
+            error_message="Locator.click: Timeout 10000ms exceeded.",
+            dom_snapshot="<button disabled>...</button>",
+            page_url="http://localhost:5173/",
+            original_code="click",
+            category=FailureCategory.ACTIONABILITY,
+            actionability_reason=ActionabilityReason.ENABLED,
+        )
+        healer.collector.collect.return_value = context
+        healer.provider.analyze_failure.return_value = ProviderResult(
+            action=ActionabilityStrategy(
+                confidence=1.0,
+                reasoning="disabled at both observations, no change",
+                reason=ActionabilityReason.ENABLED,
+                strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+            )
+        )
+
+        with pytest.raises(HealingRejectedError, match="nothing to execute"):
+            healer.attempt_heal(
+                "[data-testid='btn-login-x7f2']", Exception("timeout"), "click"
+            )
+        healer.page.wait_for_timeout.assert_not_called()
+
     def test_receives_events_dismiss_blocker_still_rejected_not_executed(self, tmp_path, monkeypatch):
         # DISMISS_BLOCKER is deliberately NOT part of this scope widening
         # — actionability_policy.py does not yet validate blocking_element
