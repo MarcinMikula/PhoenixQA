@@ -1,16 +1,17 @@
 """
 test_actionability_policy.py
 
-Unit tests for validate_receives_events_strategy() and
-validate_visible_strategy() (Sprint 6B, second ActionabilityReason).
-Pure logic, no Playwright/Ollama needed — validates
-HealingContext.collector_metadata dicts directly.
+Unit tests for validate_receives_events_strategy(), validate_visible_strategy()
+(Sprint 6B, second ActionabilityReason), and validate_enabled_strategy()
+(Sprint 8, third ActionabilityReason). Pure logic, no Playwright/Ollama
+needed — validates HealingContext.collector_metadata dicts directly.
 """
 import pytest
 
 from phoenix.ai.base_provider import HealingContext
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.actionability_policy import (
+    validate_enabled_strategy,
     validate_receives_events_strategy,
     validate_visible_strategy,
 )
@@ -186,6 +187,17 @@ def _visible_wait_and_retry_strategy(confidence=0.80):
     )
 
 
+def _enabled_wait_and_retry_strategy(confidence=0.80):
+    return ActionabilityStrategy(
+        confidence=confidence,
+        reasoning="The element's disabled state actually changed between t0 and t1.",
+        raw_response="{...}",
+        reason=ActionabilityReason.ENABLED,
+        strategy=ActionabilityStrategyKind.WAIT_AND_RETRY,
+        suggested_wait_ms=1200,
+    )
+
+
 @pytest.mark.unit
 class TestValidateVisibleStrategy:
     # Sprint 6B, second ActionabilityReason: a DELIBERATELY STRONGER
@@ -265,3 +277,76 @@ class TestValidateVisibleStrategy:
         assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
         assert result.corrected_by_policy is False
         assert result is strategy
+
+
+@pytest.mark.unit
+class TestValidateEnabledStrategy:
+    # Sprint 8, third ActionabilityReason: reuses VISIBLE's evidence
+    # standard directly (an observed state change), not a new one — see
+    # validate_enabled_strategy()'s own docstring. This class mirrors
+    # TestValidateVisibleStrategy's structure exactly, substituting only
+    # the metadata's semantic meaning (disabled vs visibility).
+
+    def test_corrected_to_no_safe_recovery_when_no_state_change_was_observed(self):
+        # The real Chaos App PERMANENT-mode shape: still disabled at
+        # both t0 and t1.
+        context = _context(collector_metadata={
+            "target_state_changed_during_observation": False,
+            "observation_window_ms": 1200,
+        })
+        result = validate_enabled_strategy(_enabled_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+        assert result.original_strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
+        assert "disabled" in result.policy_reason
+
+    def test_corrected_to_no_safe_recovery_when_evidence_key_missing_entirely(self):
+        context = _context(collector_metadata={})
+        result = validate_enabled_strategy(_enabled_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is True
+
+    def test_passes_through_when_a_real_state_change_was_observed(self):
+        # The real Chaos App TRANSIENT-mode shape: disabled genuinely
+        # flips from True to False between t0 and t1.
+        context = _context(collector_metadata={
+            "target_state_changed_during_observation": True,
+            "observation_window_ms": 1200,
+        })
+        result = validate_enabled_strategy(_enabled_wait_and_retry_strategy(), context)
+
+        assert result.strategy == ActionabilityStrategyKind.WAIT_AND_RETRY
+        assert result.corrected_by_policy is False
+
+    def test_no_safe_recovery_passes_through_unmodified(self):
+        strategy = ActionabilityStrategy(
+            confidence=0.75,
+            reasoning="No observed change.",
+            raw_response="{...}",
+            reason=ActionabilityReason.ENABLED,
+            strategy=ActionabilityStrategyKind.NO_SAFE_RECOVERY,
+        )
+        context = _context(collector_metadata={})
+
+        result = validate_enabled_strategy(strategy, context)
+
+        assert result.strategy == ActionabilityStrategyKind.NO_SAFE_RECOVERY
+        assert result.corrected_by_policy is False
+        assert result is strategy
+
+    def test_does_not_share_state_with_validate_visible_strategy(self):
+        # Regression guard for the "separate function, not a shared
+        # helper" design decision (see validate_enabled_strategy()'s
+        # docstring) — VISIBLE's evidence must never leak into an
+        # ENABLED validation call or vice versa, since they're genuinely
+        # different functions despite identical logic shape.
+        context = _context(collector_metadata={
+            "target_state_changed_during_observation": True,
+        })
+        enabled_result = validate_enabled_strategy(_enabled_wait_and_retry_strategy(), context)
+        visible_result = validate_visible_strategy(_visible_wait_and_retry_strategy(), context)
+
+        assert enabled_result.reason == ActionabilityReason.ENABLED
+        assert visible_result.reason == ActionabilityReason.VISIBLE
