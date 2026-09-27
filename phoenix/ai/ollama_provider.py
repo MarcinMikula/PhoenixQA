@@ -83,11 +83,14 @@ from phoenix.ai.prompt_templates import SYSTEM_PROMPT as SELECTOR_SYSTEM_PROMPT
 from phoenix.ai.prompt_templates import build_user_prompt as build_selector_user_prompt
 from phoenix.ai.prompts.actionability_prompt import SYSTEM_PROMPT as ACTIONABILITY_SYSTEM_PROMPT
 from phoenix.ai.prompts.actionability_prompt import build_user_prompt as build_actionability_user_prompt
+from phoenix.ai.prompts.enabled_prompt import SYSTEM_PROMPT as ENABLED_SYSTEM_PROMPT
+from phoenix.ai.prompts.enabled_prompt import build_user_prompt as build_enabled_user_prompt
 from phoenix.ai.prompts.visible_prompt import SYSTEM_PROMPT as VISIBLE_SYSTEM_PROMPT
 from phoenix.ai.prompts.visible_prompt import build_user_prompt as build_visible_user_prompt
 from phoenix.ai.response_parser import parse_healing_response
 from phoenix.collector.failure_classifier import ActionabilityReason, FailureCategory
 from phoenix.healing.actionability_policy import (
+    validate_enabled_strategy,
     validate_receives_events_strategy,
     validate_visible_strategy,
 )
@@ -196,6 +199,8 @@ class OllamaProvider(BaseProvider):
                 return ACTIONABILITY_SYSTEM_PROMPT, build_actionability_user_prompt(context)
             if context.actionability_reason == ActionabilityReason.VISIBLE:
                 return VISIBLE_SYSTEM_PROMPT, build_visible_user_prompt(context)
+            if context.actionability_reason == ActionabilityReason.ENABLED:
+                return ENABLED_SYSTEM_PROMPT, build_enabled_user_prompt(context)
 
         raise NotImplementedError(
             f"OllamaProvider has no prompt for category={context.category}, "
@@ -220,6 +225,10 @@ class OllamaProvider(BaseProvider):
             if context.actionability_reason == ActionabilityReason.VISIBLE:
                 return self._run_actionability_policy(
                     context, raw_content, validate_visible_strategy
+                )
+            if context.actionability_reason == ActionabilityReason.ENABLED:
+                return self._run_actionability_policy(
+                    context, raw_content, validate_enabled_strategy
                 )
 
         raise NotImplementedError(
