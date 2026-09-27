@@ -216,6 +216,18 @@ export function getChaosConfigFromEnv() {
     ? parseInt(import.meta.env.VITE_VISIBILITY_DELAY_MS, 10)
     : undefined
 
+  // Sprint 8, third ActionabilityReason — same 'off'/'permanent'/'transient'
+  // pattern as visibilityDelayMode/pointerEventsOverlayMode. Evidence
+  // model mirrors VISIBLE (a t0/t1 observed state change), not
+  // RECEIVES_EVENTS (a declared CSS capability) — see disabledState.js's
+  // own docstring for the full reasoning. Defaults to 'off'.
+  const disabledStateMode =
+    import.meta.env.VITE_DISABLED_STATE_MODE || 'off'
+
+  const disabledStateMs = import.meta.env.VITE_DISABLED_STATE_MS
+    ? parseInt(import.meta.env.VITE_DISABLED_STATE_MS, 10)
+    : undefined
+
   const baseMechanisms = getMechanismsForLevel(level)
   const overrides = readMechanismOverridesFromEnv()
   const mechanisms = applyMechanismOverrides(baseMechanisms, overrides)
@@ -232,5 +244,7 @@ export function getChaosConfigFromEnv() {
     pointerEventsOverlayMs,
     visibilityDelayMode,
     visibilityDelayMs,
+    disabledStateMode,
+    disabledStateMs,
   }
 }
