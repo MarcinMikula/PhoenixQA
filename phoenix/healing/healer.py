@@ -169,7 +169,9 @@ class Healer:
         if (
             isinstance(action, ActionabilityStrategy)
             and context.category == FailureCategory.ACTIONABILITY
-            and action.reason in (ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS)
+            and action.reason in (
+                ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS, ActionabilityReason.ENABLED,
+            )
         ):
             return self._execute_wait_and_retry_safe(context, action, result)
 
@@ -276,7 +278,9 @@ class Healer:
         if (
             isinstance(action, ActionabilityStrategy)
             and context.category == FailureCategory.ACTIONABILITY
-            and action.reason in (ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS)
+            and action.reason in (
+                ActionabilityReason.VISIBLE, ActionabilityReason.RECEIVES_EVENTS, ActionabilityReason.ENABLED,
+            )
         ):
             return self._execute_wait_and_retry_autonomous(context, action, result, timer)
 
@@ -345,7 +349,7 @@ class Healer:
     def _execute_wait_and_retry_safe(self, context, action: ActionabilityStrategy, result) -> str:
         """
         Safe Mode counterpart to `_attempt_heal_safe`'s SelectorReplacement
-        path, for `ActionabilityReason.VISIBLE` and `RECEIVES_EVENTS`
+        path, for `ActionabilityReason.VISIBLE`, `RECEIVES_EVENTS`, and `ENABLED`
         (see module docstring and `request_human_review_actionability()`'s
         own docstring for the full scope reasoning). Despite the name,
         this executes ONE strategy (`WAIT_AND_RETRY`) shared by both
@@ -379,7 +383,7 @@ class Healer:
             raise HealingRejectedError(
                 f"Accepted strategy '{action.strategy}' has no execution path "
                 f"yet — only wait_and_retry is implemented "
-                f"(for VISIBLE and RECEIVES_EVENTS)."
+                f"(for VISIBLE, RECEIVES_EVENTS, and ENABLED)."
             )
 
         return self._wait_and_return_original(context.broken_selector, action)
