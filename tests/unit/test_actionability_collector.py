@@ -223,6 +223,58 @@ class TestActionabilityCollectorVisible:
 
         assert context.collector_metadata["target_state_changed_during_observation"] is True
 
+    def test_element_found_then_disappearing_counts_as_a_state_change(self):
+        # The asymmetric missing-snapshot case: found at t0, gone by
+        # t1 (e.g. removed from the DOM entirely between checks). A
+        # real, observable difference — correctly True. Never directly
+        # tested before this pass; caught while writing ENABLED's
+        # mirror of this same logic and realizing VISIBLE's own
+        # docstring claim about this case had no test backing it either
+        # way.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot_t0 = {
+            "target_outer_html": "<div>", "visibility": "visible",
+            "display": "block", "opacity": "1",
+            "bounding_box": {"x": 0, "y": 0, "width": 100, "height": 40},
+        }
+        page.evaluate.side_effect = [snapshot_t0, None]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "fill", classified)
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is True
+
+    def test_both_snapshots_missing_is_not_read_as_a_state_change(self):
+        # The symmetric missing-snapshot case — see the corrected
+        # docstring on _state_changed() for the full reasoning: found
+        # at NEITHER point means there was never a state to observe
+        # changing, correctly False, not folded into the asymmetric
+        # case's "changed" reading. Never directly tested before this
+        # pass.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        page.evaluate.side_effect = [None, None]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="fill",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.VISIBLE,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "fill", classified)
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is False
+
     def test_no_dom_probe_or_blocker_fields_for_visible(self):
         # VISIBLE has no separate blocker concept — confirms the
         # collector doesn't invent blocking_element_* keys for a reason
@@ -252,11 +304,149 @@ class TestActionabilityCollectorVisible:
 
 
 @pytest.mark.unit
+class TestActionabilityCollectorEnabled:
+    def test_gathers_target_context_with_no_state_change(self):
+        # The PERMANENT-mode shape: still disabled at both t0 and t1 —
+        # no observed change. Ground truth: no_safe_recovery.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot = {
+            "target_outer_html": '<button data-testid="btn-login-x7f2" disabled="">Log in</button>',
+            "disabled": True,
+        }
+        page.evaluate.side_effect = [snapshot, dict(snapshot)]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="click",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.ENABLED,
+            raw_message="Locator.click: ... element is not enabled",
+        )
+        context = collector.collect(
+            "[data-testid='btn-login-x7f2']", Exception("timeout"), "click", classified
+        )
+
+        assert context.category == FailureCategory.ACTIONABILITY
+        assert context.actionability_reason == ActionabilityReason.ENABLED
+        assert context.collector_metadata["target_outer_html"].startswith("<button")
+        assert context.collector_metadata["target_state_changed_during_observation"] is False
+        assert "not enabled" in context.dom_snapshot
+        # Same temporal-evidence mechanism as VISIBLE — a real
+        # wall-clock wait must happen between the two snapshots.
+        page.wait_for_timeout.assert_called_once()
+
+    def test_gathers_target_context_with_a_real_state_change(self):
+        # The TRANSIENT-mode shape: disabled genuinely flips from True
+        # to False between t0 and t1 — real, observed evidence. Ground
+        # truth: wait_and_retry.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot_t0 = {
+            "target_outer_html": '<button data-testid="btn-login-x7f2" disabled="">Log in</button>',
+            "disabled": True,
+        }
+        snapshot_t1 = {**snapshot_t0, "disabled": False}
+        page.evaluate.side_effect = [snapshot_t0, snapshot_t1]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="click",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.ENABLED,
+            raw_message="Locator.click: ... element is not enabled",
+        )
+        context = collector.collect(
+            "[data-testid='btn-login-x7f2']", Exception("timeout"), "click", classified
+        )
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is True
+        assert context.collector_metadata["target_state_t0"]["disabled"] is True
+        assert context.collector_metadata["target_state_t1"]["disabled"] is False
+
+    def test_element_found_then_disappearing_counts_as_a_state_change(self):
+        # Mirrors VISIBLE's equivalent test — the asymmetric
+        # missing-snapshot case (found at t0, gone by t1) is a real,
+        # observable difference, correctly True.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot_t0 = {
+            "target_outer_html": '<button data-testid="btn-login-x7f2">Log in</button>',
+            "disabled": True,
+        }
+        page.evaluate.side_effect = [snapshot_t0, None]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="click",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.ENABLED,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "click", classified)
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is True
+
+    def test_both_snapshots_missing_is_not_read_as_a_state_change(self):
+        # Caught while writing this test — the docstring on the
+        # original VISIBLE method this mirrors overstated "missing
+        # snapshots are treated as changed" as one blanket rule; the
+        # ACTUAL (and semantically correct) behavior distinguishes
+        # "found at one point, not the other" (True — a real
+        # difference) from "found at NEITHER point" (False — there was
+        # never a state to observe changing; waiting longer wouldn't
+        # materialize an element that was never found at all). This
+        # test pins down the second case specifically, now that the
+        # docstring accurately describes it instead of overclaiming.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        page.evaluate.side_effect = [None, None]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="click",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.ENABLED,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "click", classified)
+
+        assert context.collector_metadata["target_state_changed_during_observation"] is False
+
+    def test_no_dom_probe_or_blocker_fields_for_enabled(self):
+        # ENABLED has no separate blocker concept, same as VISIBLE —
+        # confirms the collector doesn't invent blocking_element_* keys.
+        page = MagicMock()
+        page.url = "http://localhost:5173/"
+        snapshot = {"target_outer_html": "<button>", "disabled": True}
+        page.evaluate.side_effect = [snapshot, dict(snapshot)]
+
+        collector = ActionabilityCollector(page)
+        classified = ClassifiedFailure(
+            category=FailureCategory.ACTIONABILITY,
+            action="click",
+            locator_resolved=True,
+            actionability_reason=ActionabilityReason.ENABLED,
+            raw_message="...",
+        )
+        context = collector.collect("#x", Exception("timeout"), "click", classified)
+
+        assert "blocking_element_outer_html" not in context.collector_metadata
+        assert "blocking_element_from_call_log" not in context.collector_metadata
+
+
+@pytest.mark.unit
 class TestActionabilityCollectorUnimplementedReasons:
     @pytest.mark.parametrize(
         "reason",
         [
-            ActionabilityReason.ENABLED,
+            # ENABLED removed from this list (Sprint 8) — it's now
+            # implemented, see TestActionabilityCollectorEnabled below.
+            # Only EDITABLE/STABLE remain genuinely unimplemented.
             ActionabilityReason.EDITABLE,
             ActionabilityReason.STABLE,
         ],
