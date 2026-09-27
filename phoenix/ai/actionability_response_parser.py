@@ -2,14 +2,17 @@
 actionability_response_parser.py
 
 Parses raw LLM text output into an ActionabilityStrategy — the
-FailureCategory.ACTIONABILITY / ActionabilityReason.RECEIVES_EVENTS
-counterpart to response_parser.py's parse_healing_response(). Kept as a
-SEPARATE module rather than a second branch inside response_parser.py:
-that file's own docstring already says it "is, and has only ever been,
-called from the FailureCategory.LOCATOR_RESOLUTION path" — bolting a
-second, differently-shaped parse path onto it would break that
-invariant rather than extend it. See LEARNINGS.md "Sprint 6B
-(implementation) — actionability provider path".
+FailureCategory.ACTIONABILITY counterpart to response_parser.py's
+parse_healing_response(). Reason-agnostic by design — the JSON shape
+doesn't vary by ActionabilityReason, so this one parser serves
+RECEIVES_EVENTS, VISIBLE, and ENABLED alike, unlike the prompts
+themselves which are reason-specific. Kept as a SEPARATE module rather
+than a second branch inside response_parser.py: that file's own
+docstring already says it "is, and has only ever been," called from the
+FailureCategory.LOCATOR_RESOLUTION path — bolting a second,
+differently-shaped parse path onto it would break that invariant rather
+than extend it. See LEARNINGS.md "Sprint 6B (implementation) —
+actionability provider path".
 
 Deliberately does NOT import response_parser.py's private JSON-extraction
 helper, even though the logic (fenced code block → bare {...} block →
