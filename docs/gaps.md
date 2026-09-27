@@ -54,18 +54,24 @@ FailureCategory.LOCATOR_RESOLUTION   # locator never resolved
 └── action: SelectorReplacement (default; see Gap #14 for its limits)  ✅ live, verified Sprint 4/5
 
 FailureCategory.ACTIONABILITY        # locator resolved, action could not proceed
-├── reason: VISIBLE                                                    🟡 Collected + ActionabilityStrategy PRODUCED end-to-end,
+├── reason: VISIBLE                                                    🟢 Collected + ActionabilityStrategy PRODUCED end-to-end,
 │   └── action: ActionabilityStrategy (temporal t0/t1 evidence,            unit- AND live-verified BOTH directions (permanent →
-│       validated by actionability_policy.py)                              no_safe_recovery, transient → wait_and_retry, both
-│                                                                            self-selected correctly, no policy correction needed
-│                                                                            either time). Healer still rejects it — no execution.
-├── reason: ENABLED                                                    ⬜ not started
+│       validated by actionability_policy.py)                              no_safe_recovery, transient → wait_and_retry). Healer
+│                                                                            EXECUTES wait_and_retry, live-verified (2/2, autonomous
+│                                                                            + safe mode UX confirmed).
+├── reason: ENABLED                                                    🟡 Same temporal model as VISIBLE — collector, prompt,
+│   └── action: ActionabilityStrategy (temporal t0/t1 evidence,            policy, provider wiring, AND Healer execution all
+│       validated by actionability_policy.py)                              implemented and unit-verified (Sprint 8). NOT yet
+│                                                                            live-verified — chaos_app/disabledState.js exists,
+│                                                                            no live pytest run against it yet.
 ├── reason: EDITABLE                                                   ⬜ not started
 ├── reason: STABLE                                                     ⬜ blocked — no deterministic Chaos App mechanism, see LEARNINGS.md Sprint 6B (decision)
-└── reason: RECEIVES_EVENTS (names the specific blocking element)      🟡 Context collected + ActionabilityStrategy genuinely PRODUCED
+└── reason: RECEIVES_EVENTS (names the specific blocking element)      🟢 Context collected + ActionabilityStrategy genuinely PRODUCED
     └── action: ActionabilityStrategy (reason + strategy kind +           end-to-end, unit- AND live-verified (real Chaos App + Ollama).
         optional wait/blocking element)                                   Guardrail corrects the model's proposal every time sampled.
-                                                                            Healer still rejects it — no execution exists yet.
+                                                                            Healer EXECUTES wait_and_retry, live-verified (2/2).
+                                                                            dismiss_blocker remains proposal-only (no DOM-validated
+                                                                            guardrail exists for it).
 
 FailureCategory.REFERENCE            # was actionable, then lost mid-action — dormant
 └── action: RetryStrategy (declared, no active collector; see Gap #4)  ⬜ dormant by design, not scheduled
