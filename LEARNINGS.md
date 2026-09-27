@@ -5296,7 +5296,111 @@ reasons that support `WAIT_AND_RETRY` are now live-verified, not just
 unit-tested. `DISMISS_BLOCKER` remains the one deliberately
 unaddressed strategy — still proposal-only, by design.
 
+### [Decision + Implementation] Third `ActionabilityReason` — `ENABLED`, built and unit-verified end-to-end
+
+Per direct discussion: `ENABLED` chosen over `EDITABLE` (more common
+real-world pattern — a submit button disabled until validation passes
+or an async save completes, vs. `EDITABLE`'s rarer readonly-field
+case). The classifier already recognized `"element is not enabled"`
+(built proactively in Sprint 6B, never used until now) — zero
+classifier work needed.
+
+**Key design decision, made before any code:** `ENABLED` mirrors
+`VISIBLE`'s evidence model (an observed state change across two real
+DOM snapshots), NOT `RECEIVES_EVENTS`' (a declared CSS capability).
+"Disabled → enabled" is the same SHAPE of fact as "hidden → visible" —
+a boolean-ish DOM property changing over time, not something inferable
+from a single static declaration. This determined the shape of every
+layer built below.
+
+**Chaos App:** `disabledState.js`, a HOOK (`useDisabledState`), not a
+wrapper component — mirrors `asyncDelay.js`'s `useChaosDelay()` shape,
+since a disabled state is a plain boolean prop on the SAME button
+element, not an extra DOM node. `PERMANENT`/`TRANSIENT` modes built
+directly from the start (unlike `pointerEventsOverlay.jsx`, which was
+`PERMANENT`-only until Sprint 8 forced a rework) — the pattern is
+established now, no reason to under-build a first version. Applied
+directly to `LoginForm.jsx`'s existing submit button (`disabled={...}`),
+alongside `PointerEventsOverlay` and `ComponentRemountWrapper` already
+targeting the same element — independent boolean flags don't
+structurally conflict, each test run activates one mechanism at a
+time, same as everywhere else in this app. Verified via a real
+`npm run build` (43 modules, clean) before touching any Python.
+
+**Collector:** `ActionabilityCollector._collect_enabled_context()`
+mirrors `_collect_visible_context()` almost exactly — two snapshots
+(`target.disabled`), separated by `_VISIBLE_OBSERVATION_WINDOW_MS`
+(REUSED, not a second arbitrary constant for a mechanically identical
+wait).
+
+**A real, previously-undiscovered bug caught while writing ENABLED's
+mirror of `_state_changed()`, not by using the code:** the ORIGINAL
+`VISIBLE` docstring claimed "missing snapshots are treated as changed"
+as one blanket rule. The actual code only does that for the ASYMMETRIC
+case (found at one point, not the other — `dict != None` → `True`).
+When BOTH snapshots are `None` (element never found at either point),
+the code has always returned `False` (`None != None` in Python) — which
+turns out to be the semantically CORRECT behavior (an element that was
+never found at all gives no evidence "waiting longer" would help), not
+a bug to fix. The bug was the DOCSTRING overclaiming a single rule for
+two genuinely different questions ("did something happen to a real
+element" vs. "was there ever anything to observe") — and NEITHER case
+had ever been unit-tested for `VISIBLE` before this pass. Fixed: the
+docstring now states both cases precisely; four new regression tests
+added — two for `VISIBLE` (closing a real, pre-existing coverage gap in
+already-shipped, already-live-verified code) and two mirrored for
+`ENABLED`. Same recurring "caught by writing a test for something else
+entirely" pattern this project keeps naming.
+
+**Prompt:** `enabled_prompt.py`, structurally `visible_prompt.py` with
+`disabled` substituted for visibility/display/opacity/bounding-box —
+same self-consistency check, same explicit "never propose
+`dismiss_blocker`/`force_not_allowed`" rules (this reason has no
+separate blocking element either), same two-example shape.
+
+**Policy:** `validate_enabled_strategy()` — a SEPARATE function from
+`validate_visible_strategy()`, not a shared call with a parameterized
+metadata key, because the POLICY REASON text genuinely differs (naming
+"disabled" specifically matters for a human/log reader) even though the
+underlying logic is identical. Duplicated logic, not duplicated
+meaning.
+
+**Provider wiring:** `OllamaProvider`'s `_build_prompt`/`_parse_response`
+dispatch tables gained one more `elif`-shaped branch each, mirroring
+`VISIBLE`'s exactly.
+
+**Healer execution widened in the SAME pass, not split into a separate
+review cycle:** unlike `RECEIVES_EVENTS` (which needed its own,
+deliberately later "Option A, narrowed then widened" decision because
+of `DISMISS_BLOCKER`'s unvalidated-guardrail risk), `ENABLED` only ever
+produces `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` — no third, riskier
+strategy exists for this reason. Widening `Healer`'s two scope-check
+tuples to include `ActionabilityReason.ENABLED` cost one line each; no
+reason to defer execution to a future session for a pattern already
+proven twice.
+
+**Test suite:** 26 new tests across six files (`test_actionability_collector.py`
++8, including the two `VISIBLE` gap-closing regression tests;
+`test_enabled_prompt.py`, a NEW file, +9; `test_actionability_policy.py`
++5; `test_ollama_provider.py` +4; `test_healer.py` +2 net — one existing
+`ENABLED`-is-unimplemented parametrized case removed, two new execution
+tests added). 214/214 full suite, pyflakes clean.
+
+**Not yet done: live verification.** Everything above is correct
+against mocks and a real Vite build — the actual
+`page → disabled button → Healer waits → retry succeeds` sequence has
+not been observed against a real browser + real Ollama. Same "unit-
+tested is not a live result" distinction this project draws every
+time. Next concrete step, and likely needs its own timing-margin
+discovery pass — `VITE_DISABLED_STATE_MS`'s comment in
+`chaos_app/.env.example` deliberately does not suggest a specific
+number yet, exactly because both prior timing mechanisms
+(`VITE_VISIBILITY_DELAY_MS`, `VITE_POINTER_EVENTS_OVERLAY_MS`) needed a
+real live run to find their working value, not arithmetic alone.
+
 ### [Follow-up] Remaining next steps
+
+
 
 
 
@@ -5479,3 +5583,4 @@ unaddressed strategy — still proposal-only, by design.
 - Sprint 8 Option A widened to `RECEIVES_EVENTS`: DONE — `WAIT_AND_RETRY`/`NO_SAFE_RECOVERY` execution now shared by both `VISIBLE` and `RECEIVES_EVENTS` (`DISMISS_BLOCKER` still excluded, no DOM-validated guardrail exists for it). Methods renamed `_execute_wait_and_retry_safe/_autonomous` to stop lying about scope. Caught and fixed a real gap via a new test: `action.reason` wasn't cross-checked against `context.category`, now fixed with an explicit `FailureCategory.ACTIONABILITY` guard. 188/188 full suite, pyflakes clean. **Not yet live-verified for `RECEIVES_EVENTS`** — next step. See `LEARNINGS.md` "[Implementation] Execution widened to RECEIVES_EVENTS"
 - Chaos App: `pointerEventsOverlay.jsx` gained a TRANSIENT mode (mirrors `visibilityDelay.jsx`) — `RECEIVES_EVENTS`' `WAIT_AND_RETRY` had NO way to be live-tested before this, since the overlay was permanent-only. Migration (not addition): `active` boolean → `mode`/`delayMs`, threaded consistently, verified via a real `npm run build`. Also fixed a stale `30500` recommendation for `VITE_VISIBILITY_DELAY_MS` in `chaos_app/.env.example`. **The actual live pytest run — still not done.** See `LEARNINGS.md` "[Implementation] pointerEventsOverlay.jsx gains a TRANSIENT mode"
 - Sprint 8 Option A `RECEIVES_EVENTS` widening: LIVE-VERIFIED — `WAIT_AND_RETRY` confirmed end-to-end (2/2, `healing_decisions.log` shows `receives_events`/`wait_and_retry`/`accepted:true`/`autonomous`). First attempt (`VITE_POINTER_EVENTS_OVERLAY_MS=3000`) too short — overlay vanished before `click()` was first attempted at all, mirror-image of `VISIBLE`'s margin mistake in the opposite direction. Corrected to `15000`, works. Curiosity: model's `suggested_wait_ms=3000` didn't match its own stated "15 seconds" reasoning, but pipeline latency (click timeout + LLM round-trip) already exceeded the overlay's lifetime by the time the wait even started, so it didn't matter. See `LEARNINGS.md` "[Verification] Live confirmation: RECEIVES_EVENTS' WAIT_AND_RETRY execution"
+- Third `ActionabilityReason` (`ENABLED`): DECIDED AND IMPLEMENTED — mirrors `VISIBLE`'s evidence model (observed state change), not `RECEIVES_EVENTS`' (declared CSS capability). Full vertical slice: `disabledState.js` hook (Chaos App, `npm run build`-verified), `ActionabilityCollector._collect_enabled_context()`, `enabled_prompt.py`, `validate_enabled_strategy()`, `OllamaProvider` dispatch, AND `Healer` execution widened in the same pass (no `DISMISS_BLOCKER`-style risky third strategy for this reason, so no reason to split into two review cycles like `RECEIVES_EVENTS` needed). Caught and fixed a real, previously-undiscovered docstring bug in already-shipped `VISIBLE` code along the way (see [Decision + Implementation] entry) — two new regression tests close a real gap in `VISIBLE`'s own test coverage, not just `ENABLED`'s. 26 new tests, 214/214 full suite, pyflakes clean. **Not yet live-verified** — next concrete step, likely needs its own timing-margin discovery pass like `VISIBLE`/`RECEIVES_EVENTS` did. See `LEARNINGS.md` "[Decision + Implementation] Third ActionabilityReason — ENABLED"
