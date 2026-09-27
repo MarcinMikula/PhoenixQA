@@ -27,7 +27,8 @@ FailureCategory.REFERENCE) remains declared-only, same pattern as
 FailureType's original four members in Sprint 2 — declared, not all
 implemented at once. Healer explicitly guards every action type it
 receives — SelectorReplacement, the WAIT_AND_RETRY/NO_SAFE_RECOVERY
-strategies shared by VISIBLE/RECEIVES_EVENTS, or "not yet supported"
+strategies shared by VISIBLE/RECEIVES_EVENTS/ENABLED, or "not yet
+    supported"
 — rather than silently mishandling one (see healer.py).
 """
 from dataclasses import dataclass, field
