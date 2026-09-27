@@ -1,22 +1,27 @@
 """
 actionability_collector.py
 
-Gathers context for FailureCategory.ACTIONABILITY. Two reasons have a
+Gathers context for FailureCategory.ACTIONABILITY. Three reasons have a
 real collection strategy: RECEIVES_EVENTS (Sprint 6B, chosen first for
 the richest signal — Playwright's call log names a specific blocking
-element) and VISIBLE (Sprint 6B, second reason — chosen next because
-it's the cleanest way to test the OTHER direction of
+element), VISIBLE (Sprint 6B, second reason — chosen next because it's
+the cleanest way to test the OTHER direction of
 actionability_policy.py's guardrail: does it correctly ALLOW
 wait_and_retry when real evidence supports it, not just correctly BLOCK
-it when evidence is absent). See LEARNINGS.md "Sprint 6B
-(implementation) — ActionabilityCollector" and "Sprint 6B — second
-ActionabilityReason" for the full reasoning, including why STABLE
-remains deliberately NOT chosen (no deterministic Chaos App mechanism
-exists for it yet).
+it when evidence is absent), and ENABLED (Sprint 8, third reason —
+chosen next because it reuses VISIBLE's temporal-evidence model
+directly: "disabled → enabled" is the same SHAPE of observed state
+change as "hidden → visible," just a different property). See
+LEARNINGS.md "Sprint 6B (implementation) — ActionabilityCollector",
+"Sprint 6B — second ActionabilityReason", and "Sprint 8 — third
+ActionabilityReason (ENABLED)" for the full reasoning, including why
+EDITABLE and STABLE remain deliberately NOT chosen yet (EDITABLE:
+lower real-world realism than ENABLED per direct discussion; STABLE:
+no deterministic Chaos App mechanism exists for it).
 
-The remaining three reasons (ENABLED, EDITABLE, STABLE) raise
-NotImplementedError — same convention as every other declared-but-not-
-yet-built path in this project.
+The remaining two reasons (EDITABLE, STABLE) raise NotImplementedError
+— same convention as every other declared-but-not-yet-built path in
+this project.
 
 RECEIVES_EVENTS gets TWO independent confirmations of the blocker, not
 just one:
@@ -68,6 +73,19 @@ viable version of "observe, don't declare" — a real improvement over
 RECEIVES_EVENTS' approach — without building a polling loop before
 there's evidence one is actually needed. Tracked as explicit future
 work, not forgotten scope.
+
+ENABLED REUSES VISIBLE'S TEMPORAL MODEL, NOT A NEW ONE — decided per
+direct discussion before writing any code for this reason. A disabled
+button becoming enabled is the same SHAPE of fact as a hidden element
+becoming visible: an observed change in a boolean-ish DOM property
+across two snapshots, not a declared CSS capability the way
+RECEIVES_EVENTS' evidence is. Two real snapshots of the target's
+`disabled` property, separated by the SAME wall-clock wait duration as
+VISIBLE (reusing `_VISIBLE_OBSERVATION_WINDOW_MS` rather than
+inventing a second, arbitrarily-different constant for a mechanically
+identical wait) — the evidence `actionability_policy.py` checks is
+whether `disabled` actually flipped between them, an observed fact,
+same as VISIBLE's `target_state_changed_during_observation`.
 """
 from typing import Optional
 
@@ -156,6 +174,25 @@ _GATHER_VISIBLE_SNAPSHOT_JS = """
     }
 """
 
+_GATHER_ENABLED_SNAPSHOT_JS = """
+    ([selector]) => {
+        // .disabled is the DOM property Playwright's own "enabled"
+        // actionability check reads — not the `disabled` HTML
+        // attribute's presence/absence as a string, the live boolean
+        // property (which stays correct even for elements where the
+        // attribute can be set without a value, e.g. `<button disabled>`).
+        // Called TWICE from Python, separated by a real wait — same
+        // window as VISIBLE, see _VISIBLE_OBSERVATION_WINDOW_MS.
+        const target = document.querySelector(selector);
+        if (!target) return null;
+
+        return {
+            target_outer_html: target.outerHTML,
+            disabled: target.disabled === true,
+        };
+    }
+"""
+
 
 class ActionabilityCollector(BaseContextCollector):
     def collect(
@@ -175,6 +212,11 @@ class ActionabilityCollector(BaseContextCollector):
                 broken_selector, error, original_code, classified
             )
 
+        if classified.actionability_reason == ActionabilityReason.ENABLED:
+            return self._collect_enabled_context(
+                broken_selector, error, original_code, classified
+            )
+
         reason_label = (
             classified.actionability_reason.value
             if classified.actionability_reason
@@ -182,8 +224,9 @@ class ActionabilityCollector(BaseContextCollector):
         )
         raise NotImplementedError(
             f"ActionabilityCollector has no collection strategy for '{reason_label}' "
-            f"yet. Only RECEIVES_EVENTS and VISIBLE are implemented — see "
-            f"LEARNINGS.md 'Sprint 6B (implementation) — ActionabilityCollector'."
+            f"yet. Only RECEIVES_EVENTS, VISIBLE, and ENABLED are implemented — see "
+            f"LEARNINGS.md 'Sprint 6B (implementation) — ActionabilityCollector' and "
+            f"'Sprint 8 — third ActionabilityReason (ENABLED)'."
         )
 
     def _collect_receives_events_context(
@@ -260,6 +303,80 @@ class ActionabilityCollector(BaseContextCollector):
             screenshot_path=None,
         )
 
+    def _collect_enabled_context(
+        self,
+        broken_selector: str,
+        error: Exception,
+        original_code: str,
+        classified: ClassifiedFailure,
+    ) -> HealingContext:
+        snapshot_t0 = self.page.evaluate(_GATHER_ENABLED_SNAPSHOT_JS, [broken_selector])
+        self.page.wait_for_timeout(_VISIBLE_OBSERVATION_WINDOW_MS)
+        snapshot_t1 = self.page.evaluate(_GATHER_ENABLED_SNAPSHOT_JS, [broken_selector])
+
+        collector_metadata: dict = {
+            "observation_window_ms": _VISIBLE_OBSERVATION_WINDOW_MS,
+            "target_state_t0": snapshot_t0,
+            "target_state_t1": snapshot_t1,
+            "target_state_changed_during_observation": self._enabled_state_changed(
+                snapshot_t0, snapshot_t1
+            ),
+        }
+        if snapshot_t0:
+            collector_metadata["target_outer_html"] = snapshot_t0.get("target_outer_html")
+
+        dom_snapshot = self._format_enabled_snapshot(collector_metadata)
+
+        return HealingContext(
+            broken_selector=broken_selector,
+            error_message=str(error),
+            dom_snapshot=dom_snapshot,
+            page_url=self.page.url,
+            original_code=original_code,
+            category=classified.category,
+            actionability_reason=classified.actionability_reason,
+            collector_metadata=collector_metadata,
+            screenshot_path=None,
+        )
+
+    @staticmethod
+    def _enabled_state_changed(snapshot_t0: Optional[dict], snapshot_t1: Optional[dict]) -> bool:
+        """
+        ENABLED's counterpart to _state_changed() — deliberately a
+        SEPARATE method, not a reuse of _state_changed() with different
+        arguments, since the two compare entirely different fields
+        (visibility/display/opacity/bounding-box vs. a single `disabled`
+        boolean) and conflating them into one method with optional
+        branches would obscure which fields actually matter for which
+        reason. Same missing-snapshot semantics as _state_changed(),
+        corrected there in this same pass after being caught here first:
+        found at ONE point but not the other is a real, observable
+        difference (`True`); found at NEITHER point means there was
+        never a state to observe changing at all, correctly `False`,
+        not folded into the asymmetric case's "changed" reading.
+        """
+        if snapshot_t0 is None or snapshot_t1 is None:
+            return snapshot_t0 != snapshot_t1
+        return snapshot_t0.get("disabled") != snapshot_t1.get("disabled")
+
+    @staticmethod
+    def _format_enabled_snapshot(metadata: dict) -> str:
+        """Same short-summary principle as _format_visible_snapshot."""
+        target_html: Optional[str] = metadata.get("target_outer_html")
+        t0 = metadata.get("target_state_t0")
+        t1 = metadata.get("target_state_t1")
+        changed = metadata.get("target_state_changed_during_observation")
+        window_ms = metadata.get("observation_window_ms")
+
+        return (
+            f"Target element (exists in the DOM but is not enabled):\n"
+            f"{target_html or '<!-- not found -->'}\n"
+            f"---\n"
+            f"Observed state at t0: {t0 or '<!-- not captured -->'}\n"
+            f"Observed state at t1 (+{window_ms}ms): {t1 or '<!-- not captured -->'}\n"
+            f"State changed during observation: {changed}"
+        )
+
     @staticmethod
     def _state_changed(snapshot_t0: Optional[dict], snapshot_t1: Optional[dict]) -> bool:
         """
@@ -271,11 +388,21 @@ class ActionabilityCollector(BaseContextCollector):
         alone, e.g. an expanding accordion, counts even if visibility
         itself hasn't flipped yet).
 
-        Missing snapshots (element not found at either point — e.g. it
-        was removed from the DOM entirely between checks) are treated
-        as "changed" — that IS a real, observable difference, even if
-        an unusual one; not folding it into "no evidence" would hide a
-        genuinely different state from the policy layer.
+        Missing snapshots are handled by DISTINCT cases, not one blanket
+        rule — caught while writing ENABLED's mirror of this method,
+        where the distinction had never actually been tested: if the
+        element was found at ONE point but not the other (e.g. removed
+        from the DOM entirely between checks), that asymmetry IS a
+        real, observable difference and correctly evaluates to `True`
+        (`populated_dict != None`). If it was found at NEITHER point,
+        there is no state to have changed at all — waiting longer
+        wouldn't materialize an element that was never found in the
+        first place, so this correctly evaluates to `False`
+        (`None != None`) rather than being folded into "treated as
+        changed" the way the asymmetric case is. The two cases are
+        semantically different questions ("did something happen to a
+        real element" vs. "was there ever anything to observe"), not
+        the same fact stated two ways.
         """
         if snapshot_t0 is None or snapshot_t1 is None:
             return snapshot_t0 != snapshot_t1
