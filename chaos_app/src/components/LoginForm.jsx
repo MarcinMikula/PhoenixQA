@@ -26,6 +26,14 @@
  * (see tests/unit/test_failure_classifier.py) is from a fill() action,
  * not click() — this mechanism belongs on an input field to match the
  * actual failure shape it's simulating.
+ *
+ * The submit button ALSO carries useDisabledState (Sprint 8,
+ * ActionabilityReason.ENABLED) — a plain `disabled` attribute, not
+ * another wrapper, layered onto the same button PointerEventsOverlay
+ * and ComponentRemountWrapper already target. A boolean prop and a
+ * sibling overlay div don't structurally conflict — each test run
+ * activates one mechanism at a time via its own independent env flag,
+ * same as every other independent mechanism in this app.
  */
 import { useMemo, useState } from 'react'
 import { rotateSelector } from '../chaos/selectorRotation'
@@ -36,6 +44,7 @@ import {
 } from '../chaos/componentRemount'
 import { PointerEventsOverlay } from '../chaos/pointerEventsOverlay'
 import { VisibilityDelayWrapper } from '../chaos/visibilityDelay'
+import { useDisabledState } from '../chaos/disabledState'
 
 const VALID_USERNAME = 'admin'
 const VALID_PASSWORD = 'secret'
@@ -50,6 +59,8 @@ export function LoginForm({
   pointerEventsOverlayMs,
   visibilityDelayMode = 'off',
   visibilityDelayMs,
+  disabledStateMode = 'off',
+  disabledStateMs,
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -58,6 +69,7 @@ export function LoginForm({
 
   const rotationActive = activeMechanisms.includes('selector_rotation')
   const mutationActive = activeMechanisms.includes('dom_mutation')
+  const isSubmitDisabled = useDisabledState(disabledStateMode, disabledStateMs)
 
   // useMemo: rotate ONCE per mount, not on every keystroke re-render.
   // See selectorRotation.js for why that distinction matters.
@@ -123,7 +135,7 @@ export function LoginForm({
             minDelayMs={componentRemountMinMs}
             maxDelayMs={componentRemountMaxMs}
           >
-            <button type="submit" data-testid={testIds.submit}>
+            <button type="submit" data-testid={testIds.submit} disabled={isSubmitDisabled}>
               Log in
             </button>
           </ComponentRemountWrapper>
