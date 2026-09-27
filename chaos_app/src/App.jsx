@@ -44,6 +44,10 @@ function App() {
             Visibility Delay (Sprint 6B, VISIBLE): {config.visibilityDelayMode}
             {config.visibilityDelayMode === 'transient' ? ` (${config.visibilityDelayMs ?? 1000}ms)` : ''}
           </li>
+          <li>
+            Disabled State (Sprint 8, ENABLED): {config.disabledStateMode}
+            {config.disabledStateMode === 'transient' ? ` (${config.disabledStateMs ?? 1000}ms)` : ''}
+          </li>
         </ul>
       </div>
 
@@ -58,6 +62,8 @@ function App() {
           pointerEventsOverlayMs={config.pointerEventsOverlayMs}
           visibilityDelayMode={config.visibilityDelayMode}
           visibilityDelayMs={config.visibilityDelayMs}
+          disabledStateMode={config.disabledStateMode}
+          disabledStateMs={config.disabledStateMs}
         />
         <TicketList
           activeMechanisms={config.mechanisms}
